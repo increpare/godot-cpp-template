@@ -15,15 +15,15 @@ ios.arm64.double.debug = "./ios/libEXTENSION-NAME.ios.template_debug.arm64.doubl
 ios.arm64.single.release = "./ios/libEXTENSION-NAME.ios.template_release.arm64.dylib"
 ios.arm64.double.release = "./ios/libEXTENSION-NAME.ios.template_release.arm64.double.dylib"
 
-windows.x86_32.single.debug = "./windows/EXTENSION-NAME.windows.template_debug.x86_32.dll"
-windows.x86_32.double.debug = "./windows/EXTENSION-NAME.windows.template_debug.x86_32.double.dll"
-windows.x86_32.single.release = "./windows/EXTENSION-NAME.windows.template_release.x86_32.dll"
-windows.x86_32.double.release = "./windows/EXTENSION-NAME.windows.template_release.x86_32.double.dll"
+windows.x86_32.single.debug = "./windows/libEXTENSION-NAME.windows.template_debug.x86_32.dll"
+windows.x86_32.double.debug = "./windows/libEXTENSIONEXTENSION-NAME.windows.template_debug.x86_32.double.dll"
+windows.x86_32.single.release = "./windows/libEXTENSION-NAME.windows.template_release.x86_32.dll"
+windows.x86_32.double.release = "./windows/libEXTENSION-NAME.windows.template_release.x86_32.double.dll"
 
-windows.x86_64.single.debug = "./windows/EXTENSION-NAME.windows.template_debug.x86_64.dll"
-windows.x86_64.double.debug = "./windows/EXTENSION-NAME.windows.template_debug.x86_64.double.dll"
-windows.x86_64.single.release = "./windows/EXTENSION-NAME.windows.template_release.x86_64.dll"
-windows.x86_64.double.release = "./windows/EXTENSION-NAME.windows.template_release.x86_64.double.dll"
+windows.x86_64.single.debug = "./windows/libEXTENSION-NAME.windows.template_debug.x86_64.dll"
+windows.x86_64.double.debug = "./windows/libEXTENSION-NAME.windows.template_debug.x86_64.double.dll"
+windows.x86_64.single.release = "./windows/libEXTENSION-NAME.windows.template_release.x86_64.dll"
+windows.x86_64.double.release = "./windows/libEXTENSION-NAME.windows.template_release.x86_64.double.dll"
 
 linux.x86_64.single.debug = "./linux/libEXTENSION-NAME.linux.template_debug.x86_64.so"
 linux.x86_64.double.debug = "./linux/libEXTENSION-NAME.linux.template_debug.x86_64.double.so"

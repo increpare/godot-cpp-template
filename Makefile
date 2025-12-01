@@ -64,8 +64,8 @@ macos: SConstruct
 # Deploy built binaries to shared drive
 deploy:
 	@echo "Deploying to egg folder..."
-	@rm -rf ~/Documents/vbox_shared_drive/egg-game/bin
-	@cp -r demo/bin ~/Documents/vbox_shared_drive/egg-game/bin
+	@rm -rf ~/Godot/egg-game/bin
+	@cp -r demo/bin ~/Godot/egg-game/bin
 	@echo "Deployment complete!"
 
 # Build for windows64, macos, and linux64
