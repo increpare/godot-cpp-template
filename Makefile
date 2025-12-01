@@ -1,6 +1,4 @@
-TARGET = template_debug
-
-BASE = scons target=$(TARGET) $(EXTRA_ARGS)
+BASE = scons $(EXTRA_ARGS)
 LINUX = $(BASE) platform=linux
 WINDOWS = $(BASE) platform=windows
 MACOS = $(BASE) platform=macos
@@ -10,7 +8,7 @@ MACOS = $(BASE) platform=macos
 usage:
 	@echo -e "Specify one of the available targets:\n"
 	@LC_ALL=C $(MAKE) -pRrq -f $(lastword $(MAKEFILE_LIST)) : 2>/dev/null | awk -v RS= -F: '/(^|\n)# Files(\n|$$)/,/(^|\n)# Finished Make data base/ {if ($$1 !~ "^[#.]") {print $$1}}' | sort | grep -E -v -e '^[^[:alnum:]]' -e '^$@$$'
-	@echo -e "\nDefine the SCons target with TARGET, and pass extra SCons arguments with EXTRA_ARGS."
+	@echo -e "\nPass extra SCons arguments with EXTRA_ARGS."
 
 
 linux:
@@ -37,10 +35,12 @@ linux-docker:
 	make linux64-docker
 
 linux32-docker:
-	@./docker-build-linux.sh --arch x86_32 --target $(TARGET)
+	@./docker-build-linux.sh --arch x86_32 --target template_debug
+	@./docker-build-linux.sh --arch x86_32 --target template_release
 
 linux64-docker:
-	@./docker-build-linux.sh --arch x86_64 --target $(TARGET)
+	@./docker-build-linux.sh --arch x86_64 --target template_debug
+	@./docker-build-linux.sh --arch x86_64 --target template_release
 
 
 windows:
@@ -48,14 +48,17 @@ windows:
 	make windows64
 
 windows32: SConstruct
-	$(WINDOWS) arch=x86_32
+	$(WINDOWS) arch=x86_32 target=template_debug
+	$(WINDOWS) arch=x86_32 target=template_release
 
 windows64: SConstruct
-	$(WINDOWS) arch=x86_64
+	$(WINDOWS) arch=x86_64 target=template_debug
+	$(WINDOWS) arch=x86_64 target=template_release
 
 
 macos: SConstruct
-	$(MACOS)
+	$(MACOS) target=template_debug
+	$(MACOS) target=template_release
 
 
 # Deploy built binaries to shared drive

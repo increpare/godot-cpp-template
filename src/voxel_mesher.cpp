@@ -95,6 +95,8 @@ void VoxelMesher::set_texture_dimensions(float width, float height) {
 void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns) {
 	shape_database.clear();
 	uv_patterns.clear();
+	
+	std::map<String, int> pattern_name_to_index;
 
 	// Parse UV patterns
 	Array keys = gd_uv_patterns.keys();
@@ -105,7 +107,8 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 		for (int j = 0; j < uvs.size(); j++) {
 			uv_vec.push_back(uvs[j]);
 		}
-		uv_patterns[key] = uv_vec;
+		pattern_name_to_index[key] = uv_patterns.size();
+		uv_patterns.push_back(uv_vec);
 	}
 
 	// Parse Shape Database
@@ -144,7 +147,14 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 						fd.indices.push_back(indices[k]);
 					}
 
-					fd.uv_name = uvs[face_idx];
+					String uv_name = uvs[face_idx];
+					auto it = pattern_name_to_index.find(uv_name);
+					if (it != pattern_name_to_index.end()) {
+						fd.uv_pattern_index = it->second;
+					} else {
+						fd.uv_pattern_index = -1;
+					}
+
 					fd.tile_voffset = voffsets[face_idx];
 					fd.occupy_face = occupyface[face_idx];
 					fd.face_occupancy = face_occupancy[face_idx];
@@ -281,6 +291,9 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	// Temporary buffers
 	std::vector<Vector3> cached_wobbled_local_verts;
 	std::vector<Color> cached_vertex_colors;
+	// Reserve some space to avoid reallocations
+	cached_wobbled_local_verts.reserve(256);
+	cached_vertex_colors.reserve(256);
 
 	FastNoiseLite *n1 = noise1.ptr();
 	FastNoiseLite *n2 = noise2.ptr();
@@ -352,8 +365,8 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			if (!wobbled_calculated) {
 				cached_wobbled_local_verts.clear();
 				cached_vertex_colors.clear();
-				cached_wobbled_local_verts.reserve(shape_data.vertices.size());
-				cached_vertex_colors.reserve(shape_data.vertices.size());
+				// Capacity is preserved, no need to reserve again if size is small
+
 
 				for (const Vector3 &base_local : shape_data.vertices) {
 					Vector3 world_pos = base_local + v_vec;
@@ -375,9 +388,8 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
 			
 			std::vector<Vector2> *uv_ptr = nullptr;
-			auto it = uv_patterns.find(face.uv_name);
-			if (it != uv_patterns.end()) {
-				uv_ptr = &it->second;
+			if (face.uv_pattern_index >= 0 && face.uv_pattern_index < (int)uv_patterns.size()) {
+				uv_ptr = &uv_patterns[face.uv_pattern_index];
 			}
 
 			// Triangulate

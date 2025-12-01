@@ -19,7 +19,7 @@ class VoxelMesher : public RefCounted {
 private:
 	struct FaceData {
 		std::vector<int> indices;
-		String uv_name;
+		int uv_pattern_index;
 		int tile_voffset;
 		bool occupy_face;
 		int face_occupancy; // Enum value
@@ -34,9 +34,9 @@ private:
 	// database[shape_index][rotation][vflip]
 	std::vector<std::vector<std::vector<ShapeVariant>>> shape_database;
 
-	// uv_patterns[name] -> vector of Vector2
-	std::map<String, std::vector<Vector2>> uv_patterns;
-
+	// uv_patterns[index] -> vector of Vector2
+	std::vector<std::vector<Vector2>> uv_patterns;
+	
 	Ref<FastNoiseLite> noise1;
 	Ref<FastNoiseLite> noise2;
 	Ref<FastNoiseLite> noise3;
