@@ -1,24 +1,25 @@
 #include "example_class.h"
 
-void ExampleClass::_bind_methods() {
-	godot::ClassDB::bind_method(D_METHOD("print_type", "variant"), &ExampleClass::print_type);
-	godot::ClassDB::bind_method(D_METHOD("print_array", "array"), &ExampleClass::print_array);
-	godot::ClassDB::bind_method(D_METHOD("serialize_array", "array"), &ExampleClass::serialize_array);
-	godot::ClassDB::bind_method(D_METHOD("serialize_game_data", "savedat"), &ExampleClass::serialize_game_data);
-	godot::ClassDB::bind_method(D_METHOD("deserialize_game_data", "buffer"), &ExampleClass::deserialize_game_data);
+void OeufSerializer::_bind_methods() {
+	godot::ClassDB::bind_method(D_METHOD("print_type", "variant"), &OeufSerializer::print_type);
+	godot::ClassDB::bind_method(D_METHOD("print_array", "array"), &OeufSerializer::print_array);
+	godot::ClassDB::bind_method(D_METHOD("serialize_array", "array"), &OeufSerializer::serialize_array);
+	godot::ClassDB::bind_method(D_METHOD("serialize_game_data", "savedat"), &OeufSerializer::serialize_game_data);
+	godot::ClassDB::bind_method(D_METHOD("deserialize_game_data", "buffer"), &OeufSerializer::deserialize_game_data);
+	godot::ClassDB::bind_method(D_METHOD("create_cube_mesh"), &OeufSerializer::create_cube_mesh);
 }
 
-void ExampleClass::print_type(const Variant &p_variant) const {
+void OeufSerializer::print_type(const Variant &p_variant) const {
 	print_line(vformat("Type: %d", p_variant.get_type()));
 }
 
-void ExampleClass::print_array(const TypedArray<Vector3i> &p_array) const {
+void OeufSerializer::print_array(const TypedArray<Vector3i> &p_array) const {
 	for (int i = 0; i < p_array.size(); i++) {
 		print_line(vformat("Vector3i[%d]: %s", i, p_array[i]));
 	}
 }
 
-PackedByteArray ExampleClass::serialize_array(const TypedArray<Vector3i> &p_array) const {
+PackedByteArray OeufSerializer::serialize_array(const TypedArray<Vector3i> &p_array) const {
 	PackedByteArray p_packed_array;
 	for (int i = 0; i < p_array.size(); i++) {
 		Vector3i v = p_array[i];
@@ -122,7 +123,7 @@ struct BufferReader {
 	}
 };
 
-PackedByteArray ExampleClass::serialize_game_data(const Array &p_savedat) const {
+PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) const {
 	BufferWriter writer;
 
 	// Structure of savedat:
@@ -304,7 +305,7 @@ PackedByteArray ExampleClass::serialize_game_data(const Array &p_savedat) const 
 	return writer.get_packed_byte_array();
 }
 
-Array ExampleClass::deserialize_game_data(const PackedByteArray &p_buffer) const {
+Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) const {
 	BufferReader reader(p_buffer);
 
 	// Root array
@@ -431,4 +432,51 @@ Array ExampleClass::deserialize_game_data(const PackedByteArray &p_buffer) const
 	savedat.append(entities);
 
 	return savedat;
+}
+
+Ref<Mesh> OeufSerializer::create_cube_mesh() const {
+	Ref<ArrayMesh> box_mesh = memnew(ArrayMesh);
+	
+	// Create vertices for a unit cube (centered at origin, size 1x1x1)
+	// 8 vertices of a cube
+	PackedVector3Array vertices;
+	vertices.push_back(Vector3(-0.5, -0.5, -0.5)); // 0
+	vertices.push_back(Vector3(0.5, -0.5, -0.5));  // 1
+	vertices.push_back(Vector3(0.5, 0.5, -0.5));   // 2
+	vertices.push_back(Vector3(-0.5, 0.5, -0.5));  // 3
+	vertices.push_back(Vector3(-0.5, -0.5, 0.5));  // 4
+	vertices.push_back(Vector3(0.5, -0.5, 0.5));   // 5
+	vertices.push_back(Vector3(0.5, 0.5, 0.5));    // 6
+	vertices.push_back(Vector3(-0.5, 0.5, 0.5));   // 7
+	
+	// Create indices for 12 triangles (2 per face, 6 faces)
+	PackedInt32Array indices;
+	// Front face (z = 0.5)
+	indices.push_back(4); indices.push_back(5); indices.push_back(6);
+	indices.push_back(4); indices.push_back(6); indices.push_back(7);
+	// Back face (z = -0.5)
+	indices.push_back(1); indices.push_back(0); indices.push_back(3);
+	indices.push_back(1); indices.push_back(3); indices.push_back(2);
+	// Top face (y = 0.5)
+	indices.push_back(7); indices.push_back(6); indices.push_back(2);
+	indices.push_back(7); indices.push_back(2); indices.push_back(3);
+	// Bottom face (y = -0.5)
+	indices.push_back(0); indices.push_back(1); indices.push_back(5);
+	indices.push_back(0); indices.push_back(5); indices.push_back(4);
+	// Right face (x = 0.5)
+	indices.push_back(5); indices.push_back(1); indices.push_back(2);
+	indices.push_back(5); indices.push_back(2); indices.push_back(6);
+	// Left face (x = -0.5)
+	indices.push_back(0); indices.push_back(4); indices.push_back(7);
+	indices.push_back(0); indices.push_back(7); indices.push_back(3);
+	
+	// Create the arrays structure for add_surface_from_arrays
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	arrays[Mesh::ARRAY_VERTEX] = vertices;
+	arrays[Mesh::ARRAY_INDEX] = indices;
+	
+	box_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	
+	return box_mesh;
 }

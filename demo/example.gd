@@ -16,7 +16,7 @@ func save_text_file(text, path):
 	f.store_string(text)
 	
 func _ready() -> void:
-	var example := ExampleClass.new()
+	var example := OeufSerializer.new()
 	var i:int = 3
 	example.print_type(example)
 	example.print_type(i)
@@ -109,7 +109,7 @@ func _ready() -> void:
 
 	Run_Profiler(example)
 
-func Run_Profiler(example:ExampleClass):
+func Run_Profiler(example:OeufSerializer):
 	#compare our serializer against var_to_str and str_to_var
 	#eggworld is the test file
 

@@ -1,6 +1,17 @@
-[gd_scene load_steps=2 format=3 uid="uid://dh0oj81pufivs"]
+[gd_scene load_steps=3 format=3 uid="uid://dh0oj81pufivs"]
 
 [ext_resource type="Script" uid="uid://bkwk40ybs8kgm" path="res://example.gd" id="1_jdh55"]
+[ext_resource type="Script" uid="uid://b4qej4m67lou2" path="res://meshtest.gd" id="2_n51mc"]
 
-[node name="Node" type="Node"]
+[node name="Node" type="Node3D"]
 script = ExtResource("1_jdh55")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(0.616184, 0, -0.7876023, 0.08993757, 0.99345875, 0.07036304, 0.7824504, -0.1141916, 0.6121534, -1.2718248, 0.33382356, 0.9033997)
+
+[node name="SpotLight3D" type="SpotLight3D" parent="."]
+transform = Transform3D(0.7161071, -0.3388612, 0.61021614, 0, 0.87424713, 0.48548114, -0.6979904, -0.3476565, 0.6260545, 0, 0, 0)
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("2_n51mc")
