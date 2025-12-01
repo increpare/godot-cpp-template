@@ -1,0 +1,29 @@
+# Dockerfile for building 32-bit Linux GDExtension binaries
+# This requires multilib packages which are only available on x86_64
+FROM --platform=linux/amd64 ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies including multilib support for 32-bit builds
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3 \
+    python3-pip \
+    git \
+    gcc-multilib \
+    g++-multilib \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install SCons via pip (matches CI setup)
+RUN pip3 install scons==4.4.0
+
+# Set working directory
+WORKDIR /build
+
+# Copy source files (will be mounted as volume in practice)
+COPY . .
+
+# Build command (can be overridden)
+CMD ["scons", "platform=linux", "arch=x86_32", "target=template_debug"]
+

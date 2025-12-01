@@ -1,0 +1,29 @@
+# Dockerfile for building Linux GDExtension binaries
+# This allows cross-compiling Linux binaries from macOS
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+# Note: multilib packages (gcc-multilib, g++-multilib) are only needed for 32-bit builds
+# and are not available on ARM64. Install them conditionally if needed.
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3 \
+    python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install SCons via pip (matches CI setup)
+RUN pip3 install scons==4.4.0
+
+# Set working directory
+WORKDIR /build
+
+# Copy source files (will be mounted as volume in practice)
+COPY . .
+
+# Build command (can be overridden)
+CMD ["scons", "platform=linux", "arch=x86_64", "target=template_debug"]
+
