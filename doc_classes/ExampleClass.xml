@@ -30,5 +30,19 @@
 				Serialize a Vector3i array into a PackedByteArray.
 			</description>
 		</method>
+		<method name="serialize_game_data" qualifiers="const">
+			<return type="PackedByteArray" />
+			<param index="0" name="savedat" type="Array" />
+			<description>
+				Serialize game data structure into a PackedByteArray.
+			</description>
+		</method>
+		<method name="deserialize_game_data" qualifiers="const">
+			<return type="Array" />
+			<param index="0" name="buffer" type="PackedByteArray" />
+			<description>
+				Deserialize a PackedByteArray back into the game data structure.
+			</description>
+		</method>
 	</methods>
 </class>
