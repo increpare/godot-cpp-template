@@ -6,6 +6,7 @@
 #include <godot_cpp/godot.hpp>
 
 #include "example_class.h"
+#include "voxel_mesher.h"
 
 using namespace godot;
 
@@ -15,6 +16,7 @@ void initialize_gdextension_types(ModuleInitializationLevel p_level)
 		return;
 	}
 	GDREGISTER_CLASS(OeufSerializer);
+	GDREGISTER_CLASS(VoxelMesher);
 }
 
 void uninitialize_gdextension_types(ModuleInitializationLevel p_level) {

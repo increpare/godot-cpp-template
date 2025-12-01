@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="ExampleClass" inherits="RefCounted" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+<class name="OeufSerializer" inherits="RefCounted" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
 	<brief_description>
 		Example class.
 	</brief_description>
@@ -42,6 +42,12 @@
 			<param index="0" name="buffer" type="PackedByteArray" />
 			<description>
 				Deserialize a PackedByteArray back into the game data structure.
+			</description>
+		</method>
+		<method name="create_cube_mesh" qualifiers="const">
+			<return type="Mesh" />
+			<description>
+				Create and return a cube mesh with size 1x1x1.
 			</description>
 		</method>
 	</methods>
