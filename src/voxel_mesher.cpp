@@ -3,6 +3,8 @@
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <cstring>
+#include <cstdint>
 
 using namespace godot;
 
@@ -193,24 +195,68 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const Array &layer_visibility,
 		int size_x, int size_y, int size_z) {
 	
-	// Output buffers
-	PackedVector3Array final_vertices;
-	PackedVector3Array final_normals;
-	PackedColorArray final_normals_smoothed;
-	PackedVector2Array final_uvs;
+	int voxel_count = voxels.size();
+
+	// Output buffers - using std::vector for performance
+	std::vector<Vector3> final_vertices;
+	std::vector<Vector3> final_normals;
+	std::vector<Color> final_normals_smoothed;
+	std::vector<Vector2> final_uvs;
 	
 	// Tri-voxel info to return for raycasting/interaction logic
 	// Each entry: [voxel_index_in_input_array, face_index]
-	// In GDScript this is tri_voxel_info. 
-	// Since we are returning a mesh, we might need to return this auxiliary data too if GDScript uses it.
-	Array tri_voxel_info;
+	// OPTIMIZATION: Use PackedInt32Array to avoid thousands of small Array allocations
+	PackedInt32Array tri_voxel_info;
 
-	int voxel_count = voxels.size();
 	if (voxel_count == 0) {
 		Dictionary result;
-		result["mesh_arrays"] = Array(); // Empty
+		result["mesh_arrays"] = Array(); 
 		result["tri_voxel_info"] = tri_voxel_info;
 		return result;
+	}
+
+	// Heuristic reservation
+	int reserve_size = voxel_count * 24; 
+	final_vertices.reserve(reserve_size);
+	final_normals.reserve(reserve_size);
+	final_normals_smoothed.reserve(reserve_size);
+	final_uvs.reserve(reserve_size);
+	// 2 ints per triangle (3 verts) -> approx 2/3 ints per vertex
+	tri_voxel_info.resize(0); 
+
+	// 1. Unpack Data Structures
+	struct VoxelData {
+		int16_t shape_type;
+		int16_t tx, ty;
+		int8_t rot;
+		bool vflip;
+		int8_t layer;
+	};
+
+	std::vector<VoxelData> unpacked_props;
+	unpacked_props.reserve(voxel_count);
+
+	std::vector<Vector3i> unpacked_voxels;
+	unpacked_voxels.reserve(voxel_count);
+
+	for (int i = 0; i < voxel_count; i++) {
+		unpacked_voxels.push_back(voxels[i]);
+
+		Array props = voxel_properties[i];
+		VoxelData vd;
+		vd.shape_type = (int)props[0];
+		vd.tx = (int)props[1];
+		vd.ty = (int)props[2];
+		vd.rot = (int)props[3];
+		vd.vflip = (bool)props[4];
+		vd.layer = (int)props[5];
+		unpacked_props.push_back(vd);
+	}
+
+	std::vector<bool> layers_vis;
+	layers_vis.reserve(layer_visibility.size());
+	for(int i=0; i<layer_visibility.size(); ++i) {
+		layers_vis.push_back(layer_visibility[i]);
 	}
 
 	// Grid Cache
@@ -222,7 +268,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 
 	// Populate grid cache
 	for (int i = 0; i < voxel_count; i++) {
-		Vector3i v = voxels[i];
+		const Vector3i &v = unpacked_voxels[i];
 		int lx = v.x - offset.x;
 		int ly = v.y - offset.y;
 		int lz = v.z - offset.z;
@@ -232,43 +278,34 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		}
 	}
 
-	std::vector<bool> layers_vis;
-	for(int i=0; i<layer_visibility.size(); ++i) {
-		layers_vis.push_back(layer_visibility[i]);
-	}
-
 	// Temporary buffers
 	std::vector<Vector3> cached_wobbled_local_verts;
 	std::vector<Color> cached_vertex_colors;
 
-	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
-		Vector3i voxel = voxels[voxel_index];
-		Array props = voxel_properties[voxel_index];
-		int layer = props[5];
+	FastNoiseLite *n1 = noise1.ptr();
+	FastNoiseLite *n2 = noise2.ptr();
+	FastNoiseLite *n3 = noise3.ptr();
 
-		if (layer >= layers_vis.size() || !layers_vis[layer]) {
+	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
+		const VoxelData &props = unpacked_props[voxel_index];
+
+		if (props.layer >= (int)layers_vis.size() || !layers_vis[props.layer]) {
 			continue;
 		}
 
-		int shape_type = props[0];
-		int tx = props[1];
-		int ty = props[2];
-		int rot = props[3];
-		bool vflip = props[4];
-		int vflip_index = vflip ? 1 : 0;
-
-		// Access shape data safely
-		if (shape_type < 0 || shape_type >= shape_database.size()) continue;
-		const auto &rots = shape_database[shape_type];
-		if (rot < 0 || rot >= rots.size()) continue;
-		const auto &flips = rots[rot];
+		if (props.shape_type < 0 || props.shape_type >= shape_database.size()) continue;
+		const auto &rots = shape_database[props.shape_type];
+		if (props.rot < 0 || props.rot >= rots.size()) continue;
+		const auto &flips = rots[props.rot];
+		int vflip_index = props.vflip ? 1 : 0;
 		if (vflip_index < 0 || vflip_index >= flips.size()) continue;
 		const ShapeVariant &shape_data = flips[vflip_index];
 
-		// Calculate wobbled vertices
-		_cache_wobbled_verts(voxel, shape_data, offset, cached_wobbled_local_verts, cached_vertex_colors);
+		// LAZY CALCULATION: Don't calculate noise unless we actually render a face
+		bool wobbled_calculated = false;
 
-		Vector3 v_vec = Vector3(voxel);
+		const Vector3i &voxel = unpacked_voxels[voxel_index];
+		Vector3 v_vec(voxel);
 		int local_x = voxel.x - offset.x;
 		int local_y = voxel.y - offset.y;
 		int local_z = voxel.z - offset.z;
@@ -284,30 +321,22 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				int nly = local_y + dir_offset.y;
 				int nlz = local_z + dir_offset.z;
 
-				Array neighbour_props; // Null by default
 				bool has_neighbour = false;
+				int n_idx = -1;
 
 				if (nlx >= 0 && nlx < size_x && nly >= 0 && nly < size_y && nlz >= 0 && nlz < size_z) {
-					int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
+					n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
 					if (n_idx != -1) {
-						neighbour_props = voxel_properties[n_idx];
 						has_neighbour = true;
 					}
-				} else {
-					// Boundary check? GDScript checks voxel_dict which is LOCAL.
-					// So it doesn't find neighbours outside. 
-					// We replicate that behavior: if outside, no neighbour found.
 				}
 
 				if (has_neighbour) {
-					int neigh_shape_type = neighbour_props[0];
-					int neigh_rot = neighbour_props[3];
-					bool neigh_vflip = neighbour_props[4];
-					int neigh_vflip_index = neigh_vflip ? 1 : 0;
+					const VoxelData &n_props = unpacked_props[n_idx];
 					
-					// Safe access
-					if (neigh_shape_type >= 0 && neigh_shape_type < shape_database.size()) {
-						const ShapeVariant &neigh_shape = shape_database[neigh_shape_type][neigh_rot][neigh_vflip_index];
+					if (n_props.shape_type >= 0 && n_props.shape_type < shape_database.size()) {
+						int n_vflip_index = n_props.vflip ? 1 : 0;
+						const ShapeVariant &neigh_shape = shape_database[n_props.shape_type][n_props.rot][n_vflip_index];
 						int opp_dir = OPPOSITE_DIR[face_idx];
 						if (opp_dir < neigh_shape.faces.size()) {
 							int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
@@ -319,8 +348,31 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				}
 			}
 
+			// We are going to render this face, ensure vertices are ready
+			if (!wobbled_calculated) {
+				cached_wobbled_local_verts.clear();
+				cached_vertex_colors.clear();
+				cached_wobbled_local_verts.reserve(shape_data.vertices.size());
+				cached_vertex_colors.reserve(shape_data.vertices.size());
+
+				for (const Vector3 &base_local : shape_data.vertices) {
+					Vector3 world_pos = base_local + v_vec;
+
+					float nx = n1->get_noise_3dv(world_pos) * 0.1f;
+					float ny = n2->get_noise_3dv(world_pos) * 0.1f;
+					float nz = n3->get_noise_3dv(world_pos) * 0.1f;
+
+					Vector3 wobbled_local = base_local + Vector3(nx, ny, nz);
+					cached_wobbled_local_verts.push_back(wobbled_local);
+
+					Vector3 ns = (wobbled_local.normalized() + Vector3(1, 1, 1)) * 0.5f;
+					cached_vertex_colors.push_back(Color(ns.x, ns.y, ns.z));
+				}
+				wobbled_calculated = true;
+			}
+
 			// UV Calculation
-			Vector2 uv_offset = (du * (float)tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * ty + face.tile_voffset));
+			Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
 			
 			std::vector<Vector2> *uv_ptr = nullptr;
 			auto it = uv_patterns.find(face.uv_name);
@@ -330,11 +382,9 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 
 			// Triangulate
 			for (size_t tri_start = 0; tri_start < face.indices.size(); tri_start += 3) {
-				// Record source for raycasting
-				Array info;
-				info.push_back(voxel_index);
-				info.push_back((int)face_idx);
-				tri_voxel_info.push_back(info);
+				// OPTIMIZATION: Push integers directly instead of allocating Arrays
+				tri_voxel_info.push_back(voxel_index);
+				tri_voxel_info.push_back((int)face_idx);
 
 				int i0 = face.indices[tri_start + 0];
 				int i1 = face.indices[tri_start + 1];
@@ -374,12 +424,37 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		}
 	}
 
+	// Bulk convert to PackedArrays
+	PackedVector3Array p_vertices;
+	p_vertices.resize(final_vertices.size());
+	if (!final_vertices.empty()) {
+		memcpy(p_vertices.ptrw(), final_vertices.data(), final_vertices.size() * sizeof(Vector3));
+	}
+
+	PackedVector3Array p_normals;
+	p_normals.resize(final_normals.size());
+	if (!final_normals.empty()) {
+		memcpy(p_normals.ptrw(), final_normals.data(), final_normals.size() * sizeof(Vector3));
+	}
+
+	PackedColorArray p_colors;
+	p_colors.resize(final_normals_smoothed.size());
+	if (!final_normals_smoothed.empty()) {
+		memcpy(p_colors.ptrw(), final_normals_smoothed.data(), final_normals_smoothed.size() * sizeof(Color));
+	}
+
+	PackedVector2Array p_uvs;
+	p_uvs.resize(final_uvs.size());
+	if (!final_uvs.empty()) {
+		memcpy(p_uvs.ptrw(), final_uvs.data(), final_uvs.size() * sizeof(Vector2));
+	}
+
 	Array mesh_arrays;
 	mesh_arrays.resize(Mesh::ARRAY_MAX);
-	mesh_arrays[Mesh::ARRAY_VERTEX] = final_vertices;
-	mesh_arrays[Mesh::ARRAY_NORMAL] = final_normals;
-	mesh_arrays[Mesh::ARRAY_COLOR] = final_normals_smoothed;
-	mesh_arrays[Mesh::ARRAY_TEX_UV] = final_uvs;
+	mesh_arrays[Mesh::ARRAY_VERTEX] = p_vertices;
+	mesh_arrays[Mesh::ARRAY_NORMAL] = p_normals;
+	mesh_arrays[Mesh::ARRAY_COLOR] = p_colors;
+	mesh_arrays[Mesh::ARRAY_TEX_UV] = p_uvs;
 
 	Dictionary result;
 	result["mesh_arrays"] = mesh_arrays;
