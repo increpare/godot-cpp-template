@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
 #include <vector>
 #include <map>
 
@@ -72,6 +73,12 @@ public:
 		const Array &voxels,
 		const Array &voxel_properties,
 		const Array &layer_visibility,
+		int size_x, int size_y, int size_z
+	);
+
+	Ref<ArrayMesh> generate_simplified_mesh(
+		const Vector3i &chunk_coord,
+		const Array &voxels,
 		int size_x, int size_y, int size_z
 	);
 };

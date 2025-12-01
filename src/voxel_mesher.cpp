@@ -388,10 +388,193 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	return result;
 }
 
+Ref<ArrayMesh> VoxelMesher::generate_simplified_mesh(
+		const Vector3i &chunk_coord,
+		const Array &voxels,
+		int size_x, int size_y, int size_z) {
+
+	int limit_x = size_x;
+	int limit_y = size_y;
+	int limit_z = size_z;
+
+	std::vector<uint8_t> solid_array(limit_x * limit_y * limit_z, 0);
+
+	Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
+
+	int stride_x = 1;
+	int stride_y = limit_x;
+	int stride_z = limit_x * limit_y;
+	int strides[3] = {stride_x, stride_y, stride_z};
+
+	int voxel_count = voxels.size();
+	for (int i = 0; i < voxel_count; i++) {
+		Vector3i v = voxels[i];
+		int lx = v.x - offset.x;
+		int ly = v.y - offset.y;
+		int lz = v.z - offset.z;
+
+		if (lx >= 0 && lx < limit_x && ly >= 0 && ly < limit_y && lz >= 0 && lz < limit_z) {
+			solid_array[lx + ly * stride_y + lz * stride_z] = 1;
+		}
+	}
+
+	PackedVector3Array vertices;
+	PackedVector3Array normals;
+
+	int dims[3] = {limit_x, limit_y, limit_z};
+
+	for (int axis = 0; axis < 3; axis++) {
+		int u_axis = (axis + 1) % 3;
+		int v_axis = (axis + 2) % 3;
+
+		Vector3i axis_dir;
+		axis_dir[axis] = 1;
+
+		int dim_main = dims[axis];
+		int dim_u = dims[u_axis];
+		int dim_v = dims[v_axis];
+
+		int s_main = strides[axis];
+		int s_u = strides[u_axis];
+		int s_v = strides[v_axis];
+
+		std::vector<bool> mask(dim_u * dim_v);
+
+		int directions[2] = {-1, 1};
+		for (int d_idx = 0; d_idx < 2; d_idx++) {
+			int direction = directions[d_idx];
+			Vector3 normal_vec = Vector3(axis_dir) * (float)direction;
+			int neighbor_offset = s_main * direction;
+
+			for (int i = 0; i < dim_main; i++) {
+				// 1. Generate mask
+				bool neighbor_in_bounds = (i + direction >= 0 && i + direction < dim_main);
+				int n = 0;
+				int base_idx = i * s_main;
+
+				for (int v = 0; v < dim_v; v++) {
+					int row_idx = base_idx + v * s_v;
+					for (int u = 0; u < dim_u; u++) {
+						int idx = row_idx + u * s_u;
+						bool current_solid = (solid_array[idx] == 1);
+						bool neighbor_solid = false;
+						if (neighbor_in_bounds) {
+							neighbor_solid = (solid_array[idx + neighbor_offset] == 1);
+						}
+						
+						mask[n] = current_solid && !neighbor_solid;
+						n++;
+					}
+				}
+
+				// 2. Greedy merge
+				n = 0;
+				for (int v = 0; v < dim_v; v++) {
+					for (int u = 0; u < dim_u; u++) {
+						if (mask[n]) {
+							// Start of a quad
+							int width = 1;
+							while (u + width < dim_u && mask[n + width]) {
+								width++;
+							}
+
+							int height = 1;
+							bool done = false;
+							while (v + height < dim_v) {
+								for (int w = 0; w < width; w++) {
+									if (!mask[n + w + height * dim_u]) {
+										done = true;
+										break;
+									}
+								}
+								if (done) {
+									break;
+								}
+								height++;
+							}
+
+							// Add quad vertices
+							int pos_on_axis = i + (direction == 1 ? 1 : 0);
+
+							Vector3 v0;
+							v0[axis] = (float)pos_on_axis;
+							v0[u_axis] = (float)u;
+							v0[v_axis] = (float)v;
+
+							Vector3 v1 = v0;
+							v1[u_axis] += (float)width;
+
+							Vector3 v2 = v0;
+							v2[u_axis] += (float)width;
+							v2[v_axis] += (float)height;
+
+							Vector3 v3 = v0;
+							v3[v_axis] += (float)height;
+
+							Vector3 offset_vec((float)offset.x, (float)offset.y, (float)offset.z);
+
+							Vector3 p0 = v0 + offset_vec;
+							Vector3 p1 = v1 + offset_vec;
+							Vector3 p2 = v2 + offset_vec;
+							Vector3 p3 = v3 + offset_vec;
+
+							if (direction == 1) {
+								vertices.push_back(p0);
+								vertices.push_back(p3);
+								vertices.push_back(p2);
+
+								vertices.push_back(p0);
+								vertices.push_back(p2);
+								vertices.push_back(p1);
+							} else {
+								vertices.push_back(p0);
+								vertices.push_back(p1);
+								vertices.push_back(p2);
+
+								vertices.push_back(p0);
+								vertices.push_back(p2);
+								vertices.push_back(p3);
+							}
+
+							for (int k = 0; k < 6; k++) {
+								normals.push_back(normal_vec);
+							}
+
+							// Clear mask
+							for (int h = 0; h < height; h++) {
+								for (int w = 0; w < width; w++) {
+									mask[n + w + h * dim_u] = false;
+								}
+							}
+						}
+						n++;
+					}
+				}
+			}
+		}
+	}
+
+	if (vertices.size() == 0) {
+		return Ref<ArrayMesh>();
+	}
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	arrays[Mesh::ARRAY_VERTEX] = vertices;
+	arrays[Mesh::ARRAY_NORMAL] = normals;
+
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+
+	return mesh;
+}
+
 void VoxelMesher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("initialize_noise", "seed"), &VoxelMesher::initialize_noise);
 	ClassDB::bind_method(D_METHOD("set_texture_dimensions", "width", "height"), &VoxelMesher::set_texture_dimensions);
 	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns"), &VoxelMesher::parse_shapes);
 	ClassDB::bind_method(D_METHOD("generate_chunk_mesh", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh);
+	ClassDB::bind_method(D_METHOD("generate_simplified_mesh", "chunk_coord", "voxels", "size_x", "size_y", "size_z"), &VoxelMesher::generate_simplified_mesh);
 }
-

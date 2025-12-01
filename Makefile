@@ -58,10 +58,17 @@ macos: SConstruct
 	$(MACOS)
 
 
+# Deploy built binaries to shared drive
+deploy:
+	@echo "Deploying to egg folder..."
+	@rm -rf ~/Documents/vbox_shared_drive/egg-game/bin
+	@cp -r demo/bin ~/Documents/vbox_shared_drive/egg-game/bin
+	@echo "Deployment complete!"
+
 # Build for windows64, macos, and linux64
 # Uses Docker for Linux builds (recommended for macOS cross-compilation)
-all: windows64 macos linux64-docker
+all: windows64 macos linux64-docker deploy
 
 # Build for windows64 and macos only (skip Linux - no Docker needed)
-all-no-linux: windows64 macos
+all-no-linux: windows64 macos deploy
 
