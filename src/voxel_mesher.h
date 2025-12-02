@@ -41,12 +41,17 @@ private:
 	// 256 possible combinations - direct array access with zero hash overhead!
 	const ShapeVariant* shape_lookup_array[256];
 	bool shape_lookup_valid[256]; // Track which entries are valid
+	
+	// Pre-computed face occupancies: flattened array [key * 6 + face_dir] = occupancy value
+	// Eliminates repeated shape->faces[dir]->face_occupancy indirection in neighbor checks
+	// 256 shape variants × 6 faces = 1536 bytes - flattened for better cache locality
+	int8_t face_occupancy_cache[256 * 6];
 
-	// Pre-computed occupancy_fits lookup table [subject+1][container+1] -> bool
+	// Pre-computed occupancy_fits lookup table: flattened array [subject * 8 + container] -> bool
 	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6
 	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 6->7
-	// 8x8 = 64 bytes, eliminates function call overhead during neighbor checks
-	bool occupancy_fits_table[8][8];
+	// 8×8 = 64 bytes - flattened for better cache locality
+	bool occupancy_fits_table[8 * 8];
 
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;

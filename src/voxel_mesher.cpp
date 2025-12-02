@@ -115,6 +115,10 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 	for (int i = 0; i < 256; i++) {
 		shape_lookup_valid[i] = false;
 		shape_lookup_array[i] = nullptr;
+		// Initialize face occupancies to EMPTY for safety (flattened indexing)
+		for (int face_dir = 0; face_dir < 6; face_dir++) {
+			face_occupancy_cache[i * 6 + face_dir] = OCCUPANCY_EMPTY;
+		}
 	}
 	
 	uv_patterns.clear();
@@ -203,6 +207,17 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				uint8_t key = ((uint8_t)shape_type) | ((uint8_t)rotation << 4) | ((uint8_t)vflip << 6);
 				shape_lookup_array[key] = &flips[vflip];
 				shape_lookup_valid[key] = true;
+				
+				// Pre-cache face occupancies for all 6 faces - eliminates shape->faces[dir] indirection
+				const ShapeVariant &sv = flips[vflip];
+				const size_t face_count = sv.faces.size();
+				for (int face_dir = 0; face_dir < 6; face_dir++) {
+					if (face_dir < (int)face_count) {
+						face_occupancy_cache[key * 6 + face_dir] = (int8_t)sv.faces[face_dir].face_occupancy;
+					} else {
+						face_occupancy_cache[key * 6 + face_dir] = OCCUPANCY_EMPTY;
+					}
+				}
 			}
 		}
 	}
@@ -228,7 +243,7 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				fits = false;
 			}
 			
-			occupancy_fits_table[sub_idx][cont_idx] = fits;
+			occupancy_fits_table[sub_idx * 8 + cont_idx] = fits;
 		}
 	}
 }
@@ -586,6 +601,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	// This is the only safe optimization - keeps single-pass lazy evaluation intact
 	struct CachedVoxelInfo {
 		const ShapeVariant *shape_ptr;
+		uint8_t lookup_key; // Cached for direct face occupancy cache access
 		Vector3i voxel_pos;
 		int local_x, local_y, local_z;
 		bool valid;
@@ -617,6 +633,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		
 		// Cache the shape variant pointer - direct array access, fastest possible lookup!
 		cache_entry.shape_ptr = shape_lookup_array[lookup_key];
+		cache_entry.lookup_key = lookup_key; // Store for direct face occupancy cache access
 		cache_entry.voxel_pos = unpacked_voxels[voxel_index];
 		cache_entry.local_x = cache_entry.voxel_pos.x - offset.x;
 		cache_entry.local_y = cache_entry.voxel_pos.y - offset.y;
@@ -680,17 +697,15 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 					if (n_idx != -1 && voxel_cache[n_idx].valid) {
 						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
 						
-						// Direct access to cached shape - no database lookup!
-						const ShapeVariant &neigh_shape = *n_cache.shape_ptr;
+						// Direct access to cached face occupancy - no shape->faces[dir] indirection!
 						const int opp_dir = OPPOSITE_DIR[face_idx];
-						if (opp_dir < (int)neigh_shape.faces.size()) {
-							const int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
-							// Direct lookup table access - eliminates function call overhead!
-							const int sub_idx = face.face_occupancy + 1;
-							const int cont_idx = neigh_occupancy + 1;
-							if (occupancy_fits_table[sub_idx][cont_idx]) {
-								continue; // Skip this face
-							}
+						const int neigh_occupancy = face_occupancy_cache[n_cache.lookup_key * 6 + opp_dir];
+						
+						// Direct lookup table access - eliminates function call overhead!
+						const int sub_idx = face.face_occupancy + 1;
+						const int cont_idx = neigh_occupancy + 1;
+						if (occupancy_fits_table[sub_idx * 8 + cont_idx]) {
+							continue; // Skip this face
 						}
 					}
 				}
