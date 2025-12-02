@@ -308,11 +308,17 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	
 	const int voxel_count = voxels.size();
 
+	Ref<ArrayMesh> array_mesh;
+	array_mesh.instantiate();
+
+	// Tri-voxel info to return for raycasting/interaction logic
+	PackedInt32Array tri_voxel_info;
+
 	// Early exit for empty chunks
 	if (voxel_count == 0) {
 		Dictionary result;
-		result["arraymesh"] = nullptr;
-		result["tri_voxel_info"] = PackedInt32Array();
+		result["arraymesh"] = array_mesh;
+		result["tri_voxel_info"] = tri_voxel_info;
 		return result;
 	}
 
@@ -322,8 +328,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	final_normals_smoothed.clear();
 	final_uvs.clear();
 	
-	// Tri-voxel info to return for raycasting/interaction logic
-	PackedInt32Array tri_voxel_info;
+	tri_voxel_info.resize(0); 
 
 	// Reserve space if needed (only grows, never shrinks)
 	const int reserve_size = voxel_count * 32;
@@ -333,7 +338,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		final_normals_smoothed.reserve(reserve_size);
 		final_uvs.reserve(reserve_size);
 	}
-	tri_voxel_info.resize(0); 
 
 	// 1. Unpack Data Structures - reuse member buffers
 	unpacked_props.clear();
@@ -662,8 +666,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	mesh_arrays[Mesh::ARRAY_COLOR] = p_colors;
 	mesh_arrays[Mesh::ARRAY_TEX_UV] = p_uvs;
 
-	Ref<ArrayMesh> array_mesh;
-	array_mesh.instantiate();
 	array_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, mesh_arrays);
 
 	Dictionary result;
