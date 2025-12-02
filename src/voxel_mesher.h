@@ -53,6 +53,12 @@ private:
 	Ref<FastNoiseLite> noise2;
 	Ref<FastNoiseLite> noise3;
 	
+	// Cached noise pointers - set once, reused across all chunks (195 calls!)
+	// Eliminates repeated .ptr() calls in hot path
+	FastNoiseLite *cached_noise1;
+	FastNoiseLite *cached_noise2;
+	FastNoiseLite *cached_noise3;
+	
 	// Constants
 	const float TILE_W = 16.0f;
 	const float TILE_H = 16.0f;

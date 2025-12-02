@@ -83,6 +83,11 @@ VoxelMesher::VoxelMesher() {
 	noise1->set_noise_type(FastNoiseLite::TYPE_VALUE);
 	noise2->set_noise_type(FastNoiseLite::TYPE_VALUE);
 	noise3->set_noise_type(FastNoiseLite::TYPE_VALUE);
+	
+	// Cache noise pointers once - reused across all 195 chunk generations!
+	cached_noise1 = noise1.ptr();
+	cached_noise2 = noise2.ptr();
+	cached_noise3 = noise3.ptr();
 }
 
 VoxelMesher::~VoxelMesher() {
@@ -594,13 +599,14 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 
 		// Validate and cache shape access using flattened lookup table
 		uint32_t lookup_key = ((uint32_t)props.shape_type << 16) | ((uint32_t)props.rot << 8) | (props.vflip ? 1 : 0);
+		// Direct access is faster than .find() - eliminates iterator comparison overhead
 		auto lookup_it = shape_lookup.find(lookup_key);
 		if (lookup_it == shape_lookup.end()) {
 			cache_entry.valid = false;
 			continue;
 		}
 		
-		// Cache the shape variant pointer - single O(log n) lookup instead of 3 nested vector accesses!
+		// Cache the shape variant pointer - O(1) hash lookup, reused across all chunks!
 		cache_entry.shape_ptr = lookup_it->second;
 		cache_entry.voxel_pos = unpacked_voxels[voxel_index];
 		cache_entry.local_x = cache_entry.voxel_pos.x - offset.x;
@@ -615,10 +621,10 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	cached_wobbled_local_verts.reserve(512); // Larger reserve
 	cached_vertex_colors.reserve(512);
 
-	// Cache noise pointers to avoid repeated .ptr() calls
-	FastNoiseLite *n1 = noise1.ptr();
-	FastNoiseLite *n2 = noise2.ptr();
-	FastNoiseLite *n3 = noise3.ptr();
+	// Use cached noise pointers - no .ptr() calls needed!
+	FastNoiseLite *n1 = cached_noise1;
+	FastNoiseLite *n2 = cached_noise2;
+	FastNoiseLite *n3 = cached_noise3;
 
 	// Pre-compute constants
 	const float noise_scale = 0.1f;
