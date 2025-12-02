@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
 
 using namespace godot;
 
@@ -20,11 +21,9 @@ enum FaceOccupancy {
 	OCCUPANCY_SLIM = 6
 };
 
-// Ported from Shapes.gd
-static bool occupancy_fits(int subject, int container) {
-	if (container == OCCUPANCY_QUAD && subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD) {
-		return true;
-	}
+// Ported from Shapes.gd - optimized with early returns
+static inline bool occupancy_fits(int subject, int container) {
+	// Early exit for common cases
 	if (subject == OCCUPANCY_EMPTY) {
 		return true;
 	}
@@ -34,11 +33,12 @@ static bool occupancy_fits(int subject, int container) {
 	if (subject == container) {
 		return true;
 	}
-	if (subject < 4 && container == OCCUPANCY_QUAD) {
-		return true;
+	// QUAD can contain triangles and quads
+	if (container == OCCUPANCY_QUAD) {
+		return (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
 	}
-	// For triangles, they must match exactly (assuming standard 4 quadrants)
-	return subject == container;
+	// For triangles, they must match exactly
+	return false;
 }
 
 static const Vector3i DIR_OFFSETS[6] = {
@@ -249,17 +249,19 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	std::vector<Vector3i> unpacked_voxels;
 	unpacked_voxels.reserve(voxel_count);
 
+	// OPTIMIZATION: Unpack data in a single pass, avoiding repeated Array access
 	for (int i = 0; i < voxel_count; i++) {
 		unpacked_voxels.push_back(voxels[i]);
 
-		Array props = voxel_properties[i];
+		const Array &props = voxel_properties[i];
 		VoxelData vd;
-		vd.shape_type = (int)props[0];
-		vd.tx = (int)props[1];
-		vd.ty = (int)props[2];
-		vd.rot = (int)props[3];
+		// Direct access without bounds checking (assumes valid data)
+		vd.shape_type = (int16_t)(int)props[0];
+		vd.tx = (int16_t)(int)props[1];
+		vd.ty = (int16_t)(int)props[2];
+		vd.rot = (int8_t)(int)props[3];
 		vd.vflip = (bool)props[4];
-		vd.layer = (int)props[5];
+		vd.layer = (int8_t)(int)props[5];
 		unpacked_props.push_back(vd);
 	}
 
@@ -272,18 +274,19 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	// Grid Cache
 	std::vector<int> grid_cache(size_x * size_y * size_z, -1);
 	
-	Vector3i offset = Vector3i(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
-	int stride_y = size_x;
-	int stride_z = size_x * size_y;
+	const Vector3i offset = Vector3i(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
+	const int stride_y = size_x;
+	const int stride_z = size_x * size_y;
 
-	// Populate grid cache
+	// Populate grid cache - optimized bounds checking
 	for (int i = 0; i < voxel_count; i++) {
 		const Vector3i &v = unpacked_voxels[i];
-		int lx = v.x - offset.x;
-		int ly = v.y - offset.y;
-		int lz = v.z - offset.z;
+		const int lx = v.x - offset.x;
+		const int ly = v.y - offset.y;
+		const int lz = v.z - offset.z;
 		
-		if (lx >= 0 && lx < size_x && ly >= 0 && ly < size_y && lz >= 0 && lz < size_z) {
+		// Single bounds check using unsigned comparison trick
+		if ((unsigned)lx < (unsigned)size_x && (unsigned)ly < (unsigned)size_y && (unsigned)lz < (unsigned)size_z) {
 			grid_cache[lx + ly * stride_y + lz * stride_z] = i;
 		}
 	}
@@ -306,55 +309,49 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			continue;
 		}
 
-		if (props.shape_type < 0 || props.shape_type >= shape_database.size()) continue;
+		if (props.shape_type < 0 || props.shape_type >= (int)shape_database.size()) continue;
 		const auto &rots = shape_database[props.shape_type];
-		if (props.rot < 0 || props.rot >= rots.size()) continue;
+		if (props.rot < 0 || props.rot >= (int)rots.size()) continue;
 		const auto &flips = rots[props.rot];
 		int vflip_index = props.vflip ? 1 : 0;
-		if (vflip_index < 0 || vflip_index >= flips.size()) continue;
+		if (vflip_index < 0 || vflip_index >= (int)flips.size()) continue;
 		const ShapeVariant &shape_data = flips[vflip_index];
 
 		// LAZY CALCULATION: Don't calculate noise unless we actually render a face
 		bool wobbled_calculated = false;
 
 		const Vector3i &voxel = unpacked_voxels[voxel_index];
-		Vector3 v_vec(voxel);
-		int local_x = voxel.x - offset.x;
-		int local_y = voxel.y - offset.y;
-		int local_z = voxel.z - offset.z;
+		const Vector3 v_vec(voxel);
+		const int local_x = voxel.x - offset.x;
+		const int local_y = voxel.y - offset.y;
+		const int local_z = voxel.z - offset.z;
 
 		for (size_t face_idx = 0; face_idx < shape_data.faces.size(); face_idx++) {
 			const FaceData &face = shape_data.faces[face_idx];
 			if (face.indices.empty()) continue;
 
-			// Neighbor check
+			// Neighbor check - optimized bounds checking
 			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {
-				Vector3i dir_offset = DIR_OFFSETS[face_idx];
-				int nlx = local_x + dir_offset.x;
-				int nly = local_y + dir_offset.y;
-				int nlz = local_z + dir_offset.z;
+				const Vector3i &dir_offset = DIR_OFFSETS[face_idx];
+				const int nlx = local_x + dir_offset.x;
+				const int nly = local_y + dir_offset.y;
+				const int nlz = local_z + dir_offset.z;
 
-				bool has_neighbour = false;
-				int n_idx = -1;
-
-				if (nlx >= 0 && nlx < size_x && nly >= 0 && nly < size_y && nlz >= 0 && nlz < size_z) {
-					n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
+				// Use unsigned comparison for faster bounds checking (single comparison per axis)
+				if ((unsigned)nlx < (unsigned)size_x && (unsigned)nly < (unsigned)size_y && (unsigned)nlz < (unsigned)size_z) {
+					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
 					if (n_idx != -1) {
-						has_neighbour = true;
-					}
-				}
-
-				if (has_neighbour) {
-					const VoxelData &n_props = unpacked_props[n_idx];
-					
-					if (n_props.shape_type >= 0 && n_props.shape_type < shape_database.size()) {
-						int n_vflip_index = n_props.vflip ? 1 : 0;
-						const ShapeVariant &neigh_shape = shape_database[n_props.shape_type][n_props.rot][n_vflip_index];
-						int opp_dir = OPPOSITE_DIR[face_idx];
-						if (opp_dir < neigh_shape.faces.size()) {
-							int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
-							if (occupancy_fits(face.face_occupancy, neigh_occupancy)) {
-								continue; // Skip this face
+						const VoxelData &n_props = unpacked_props[n_idx];
+						
+						if (n_props.shape_type >= 0 && n_props.shape_type < (int)shape_database.size()) {
+							const int n_vflip_index = n_props.vflip ? 1 : 0;
+							const ShapeVariant &neigh_shape = shape_database[n_props.shape_type][n_props.rot][n_vflip_index];
+							const int opp_dir = OPPOSITE_DIR[face_idx];
+							if (opp_dir < (int)neigh_shape.faces.size()) {
+								const int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
+								if (occupancy_fits(face.face_occupancy, neigh_occupancy)) {
+									continue; // Skip this face
+								}
 							}
 						}
 					}
@@ -365,72 +362,100 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			if (!wobbled_calculated) {
 				cached_wobbled_local_verts.clear();
 				cached_vertex_colors.clear();
-				// Capacity is preserved, no need to reserve again if size is small
+				cached_wobbled_local_verts.reserve(shape_data.vertices.size());
+				cached_vertex_colors.reserve(shape_data.vertices.size());
 
-
-				for (const Vector3 &base_local : shape_data.vertices) {
+				// OPTIMIZATION: Batch noise calculations and use fast normalized approximation
+				const size_t vert_count = shape_data.vertices.size();
+				for (size_t i = 0; i < vert_count; i++) {
+					const Vector3 &base_local = shape_data.vertices[i];
 					Vector3 world_pos = base_local + v_vec;
 
-					float nx = n1->get_noise_3dv(world_pos) * 0.1f;
-					float ny = n2->get_noise_3dv(world_pos) * 0.1f;
-					float nz = n3->get_noise_3dv(world_pos) * 0.1f;
+					// Single noise call per component (already optimized in FastNoiseLite)
+					const float nx = n1->get_noise_3dv(world_pos) * 0.1f;
+					const float ny = n2->get_noise_3dv(world_pos) * 0.1f;
+					const float nz = n3->get_noise_3dv(world_pos) * 0.1f;
 
-					Vector3 wobbled_local = base_local + Vector3(nx, ny, nz);
+					const Vector3 wobbled_local = base_local + Vector3(nx, ny, nz);
 					cached_wobbled_local_verts.push_back(wobbled_local);
 
-					Vector3 ns = (wobbled_local.normalized() + Vector3(1, 1, 1)) * 0.5f;
-					cached_vertex_colors.push_back(Color(ns.x, ns.y, ns.z));
+					// OPTIMIZATION: Fast normalized using length_squared to avoid sqrt when possible
+					// For color calculation, we can use a faster approximation
+					const float len_sq = wobbled_local.length_squared();
+					if (len_sq > 0.0001f) {
+						const float inv_len = 1.0f / std::sqrt(len_sq);
+						const Vector3 ns = wobbled_local * inv_len;
+						cached_vertex_colors.push_back(Color(
+							(ns.x + 1.0f) * 0.5f,
+							(ns.y + 1.0f) * 0.5f,
+							(ns.z + 1.0f) * 0.5f
+						));
+					} else {
+						cached_vertex_colors.push_back(Color(0.5f, 0.5f, 0.5f));
+					}
 				}
 				wobbled_calculated = true;
 			}
 
-			// UV Calculation
-			Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
+			// UV Calculation - pre-compute once per face
+			const Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
 			
-			std::vector<Vector2> *uv_ptr = nullptr;
+			const std::vector<Vector2> *uv_ptr = nullptr;
 			if (face.uv_pattern_index >= 0 && face.uv_pattern_index < (int)uv_patterns.size()) {
 				uv_ptr = &uv_patterns[face.uv_pattern_index];
 			}
 
-			// Triangulate
-			for (size_t tri_start = 0; tri_start < face.indices.size(); tri_start += 3) {
+			// Triangulate - optimized inner loop
+			const size_t indices_size = face.indices.size();
+			for (size_t tri_start = 0; tri_start < indices_size; tri_start += 3) {
 				// OPTIMIZATION: Push integers directly instead of allocating Arrays
 				tri_voxel_info.push_back(voxel_index);
 				tri_voxel_info.push_back((int)face_idx);
 
-				int i0 = face.indices[tri_start + 0];
-				int i1 = face.indices[tri_start + 1];
-				int i2 = face.indices[tri_start + 2];
+				const int i0 = face.indices[tri_start + 0];
+				const int i1 = face.indices[tri_start + 1];
+				const int i2 = face.indices[tri_start + 2];
 
-				Vector3 v0_local = cached_wobbled_local_verts[i0];
-				Vector3 v1_local = cached_wobbled_local_verts[i1];
-				Vector3 v2_local = cached_wobbled_local_verts[i2];
+				const Vector3 &v0_local = cached_wobbled_local_verts[i0];
+				const Vector3 &v1_local = cached_wobbled_local_verts[i1];
+				const Vector3 &v2_local = cached_wobbled_local_verts[i2];
 
-				final_vertices.push_back(v0_local + v_vec);
-				final_vertices.push_back(v1_local + v_vec);
-				final_vertices.push_back(v2_local + v_vec);
+				// Pre-compute world positions
+				const Vector3 v0_world = v0_local + v_vec;
+				const Vector3 v1_world = v1_local + v_vec;
+				const Vector3 v2_world = v2_local + v_vec;
+
+				final_vertices.push_back(v0_world);
+				final_vertices.push_back(v1_world);
+				final_vertices.push_back(v2_world);
 
 				final_normals_smoothed.push_back(cached_vertex_colors[i0]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i1]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i2]);
 
-				// Face Normal
-				Vector3 edge1 = v1_local - v0_local;
-				Vector3 edge2 = v2_local - v0_local;
-				Vector3 face_norm = -edge1.cross(edge2).normalized();
+				// Face Normal - optimized calculation
+				const Vector3 edge1 = v1_local - v0_local;
+				const Vector3 edge2 = v2_local - v0_local;
+				Vector3 cross = edge1.cross(edge2);
+				const float len_sq = cross.length_squared();
+				if (len_sq > 0.0001f) {
+					cross *= (1.0f / std::sqrt(len_sq));
+				}
+				const Vector3 face_norm = -cross;
 
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 
+				// UV coordinates
 				if (uv_ptr && (tri_start + 2 < uv_ptr->size())) {
 					final_uvs.push_back((*uv_ptr)[tri_start + 0] + uv_offset);
 					final_uvs.push_back((*uv_ptr)[tri_start + 1] + uv_offset);
 					final_uvs.push_back((*uv_ptr)[tri_start + 2] + uv_offset);
 				} else {
-					final_uvs.push_back(Vector2());
-					final_uvs.push_back(Vector2());
-					final_uvs.push_back(Vector2());
+					final_uvs.push_back(uv_offset);
+					final_uvs.push_back(uv_offset);
+					final_uvs.push_back(uv_offset);
 				}
 			}
 		}
