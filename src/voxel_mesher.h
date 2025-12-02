@@ -40,6 +40,12 @@ private:
 	// This eliminates 3-level nested vector lookups - single O(1) direct pointer access!
 	std::unordered_map<uint32_t, const ShapeVariant*> shape_lookup;
 
+	// Pre-computed occupancy_fits lookup table [subject+1][container+1] -> bool
+	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6
+	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 6->7
+	// 8x8 = 64 bytes, eliminates function call overhead during neighbor checks
+	bool occupancy_fits_table[8][8];
+
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;
 	

@@ -193,6 +193,31 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 			}
 		}
 	}
+	
+	// Pre-compute occupancy_fits lookup table - eliminates function call overhead
+	// Map occupancy values (-1 to 6) to indices (0 to 7) by adding 1
+	// occupancy_fits_table[subject+1][container+1] = true if subject fits in container
+	for (int subject = -1; subject <= 6; subject++) {
+		for (int container = -1; container <= 6; container++) {
+			int sub_idx = subject + 1;
+			int cont_idx = container + 1;
+			
+			bool fits = false;
+			if (subject == OCCUPANCY_EMPTY) {
+				fits = true;
+			} else if (container == OCCUPANCY_EMPTY) {
+				fits = false;
+			} else if (subject == container) {
+				fits = true;
+			} else if (container == OCCUPANCY_QUAD) {
+				fits = (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
+			} else {
+				fits = false;
+			}
+			
+			occupancy_fits_table[sub_idx][cont_idx] = fits;
+		}
+	}
 }
 
 void VoxelMesher::_cache_wobbled_verts(const Vector3i &voxel, const ShapeVariant &shape, 
@@ -645,7 +670,10 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 						const int opp_dir = OPPOSITE_DIR[face_idx];
 						if (opp_dir < (int)neigh_shape.faces.size()) {
 							const int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
-							if (occupancy_fits(face.face_occupancy, neigh_occupancy)) {
+							// Direct lookup table access - eliminates function call overhead!
+							const int sub_idx = face.face_occupancy + 1;
+							const int cont_idx = neigh_occupancy + 1;
+							if (occupancy_fits_table[sub_idx][cont_idx]) {
 								continue; // Skip this face
 							}
 						}
