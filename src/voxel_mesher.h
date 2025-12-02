@@ -66,6 +66,40 @@ private:
 	FastNoiseLite *cached_noise2;
 	FastNoiseLite *cached_noise3;
 	
+	// Reusable buffers - pre-allocated and cleared between calls to avoid allocations
+	// Since size_x/y/z are constant, we can reuse these across all 190 calls
+	std::vector<Vector3> final_vertices;
+	std::vector<Vector3> final_normals;
+	std::vector<Color> final_normals_smoothed;
+	std::vector<Vector2> final_uvs;
+	
+	struct VoxelData {
+		int16_t shape_type;
+		int16_t tx, ty;
+		int8_t rot;
+		bool vflip;
+		int8_t layer;
+	} __attribute__((packed));
+	
+	struct CachedVoxelInfo {
+		const ShapeVariant *shape_ptr;
+		uint8_t lookup_key;
+		Vector3i voxel_pos;
+		int local_x, local_y, local_z;
+		bool valid;
+	};
+	
+	std::vector<VoxelData> unpacked_props;
+	std::vector<Vector3i> unpacked_voxels;
+	std::vector<bool> layers_vis;
+	std::vector<int> grid_cache;
+	std::vector<CachedVoxelInfo> voxel_cache;
+	std::vector<Vector3> cached_wobbled_local_verts;
+	std::vector<Color> cached_vertex_colors;
+	
+	// Track current chunk dimensions to resize grid_cache only when needed
+	int cached_size_x, cached_size_y, cached_size_z;
+	
 	// Constants
 	const float TILE_W = 16.0f;
 	const float TILE_H = 16.0f;
