@@ -23,9 +23,9 @@ func _ready() -> void:
 	
 	var arr:Array[Vector3i] = [ Vector3i(1,1,1), Vector3i(1,2,3), Vector3i(4,5,6) ]
 	example.print_array(arr)
-	var packed_array:PackedByteArray = example.serialize_array(arr)
-	print("Simple array size: ", packed_array.size())
-	print(packed_array)
+	# var packed_array:PackedByteArray = example.serialize_array(arr)
+	# print("Simple array size: ", packed_array.size())
+	# print(packed_array)
 
 	# --- Game Data Test ---
 	
