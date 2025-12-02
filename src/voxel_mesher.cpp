@@ -493,8 +493,14 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	mesh_arrays[Mesh::ARRAY_COLOR] = p_colors;
 	mesh_arrays[Mesh::ARRAY_TEX_UV] = p_uvs;
 
+	Ref<ArrayMesh> array_mesh;
+	array_mesh.instantiate();
+
+
+	array_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, mesh_arrays);
+
 	Dictionary result;
-	result["mesh_arrays"] = mesh_arrays;
+	result["arraymesh"] = array_mesh;
 	result["tri_voxel_info"] = tri_voxel_info;
 	
 	return result;
