@@ -51,6 +51,19 @@ struct BufferWriter {
 		offset += 1;
 	}
 
+	void put_s8(int8_t p_value) {
+		ensure_space(1);
+		// Cast to uint8_t to preserve bit pattern for negative values
+		data.encode_u8(offset, static_cast<uint8_t>(p_value));
+		offset += 1;
+	}
+
+	void put_16(int16_t p_value) {
+		ensure_space(2);
+		data.encode_s16(offset, p_value);
+		offset += 2;
+	}
+
 	void put_32(int32_t p_value) {
 		ensure_space(4);
 		data.encode_s32(offset, p_value);
@@ -96,6 +109,21 @@ struct BufferReader {
 		return v;
 	}
 
+	int8_t get_s8() {
+		if (offset + 1 > data.size()) return 0;
+		uint8_t v = data.decode_u8(offset);
+		offset += 1;
+		// Cast back to signed to interpret as two's complement
+		return static_cast<int8_t>(v);
+	}
+
+	int16_t get_16() {
+		if (offset + 2 > data.size()) return 0;
+		int16_t v = data.decode_s16(offset);
+		offset += 2;
+		return v;
+	}
+
 	int32_t get_32() {
 		if (offset + 4 > data.size()) return 0;
 		int32_t v = data.decode_s32(offset);
@@ -135,92 +163,57 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	}
 
 	// 0: level_state_data
-	Variant level_state_data_var = p_savedat[0];
-	if (level_state_data_var.get_type() == Variant::DICTIONARY) {
-		Dictionary level_state_data = level_state_data_var;
-		
-		// version
-		writer.put_32(level_state_data["version"]);
+	Dictionary level_state_data = p_savedat[0];
+	
+	// version
+	writer.put_8(level_state_data["version"]);
 
-		// voxel_data
-		Array voxel_data = level_state_data["voxel_data"];
-		writer.put_32(voxel_data.size());
-		// DEBUG: Print voxel count
-		// UtilityFunctions::print("Serialized voxel count: ", voxel_data.size());
-		for (int i = 0; i < voxel_data.size(); i++) {
-			Array voxel = voxel_data[i];
-			Vector3i v = voxel[0];
-			writer.put_32(v.x);
-			writer.put_32(v.y);
-			writer.put_32(v.z);
-			writer.put_32(voxel[1]); // blocktype
-			writer.put_32(voxel[2]); // tx
-			writer.put_32(voxel[3]); // ty
-			writer.put_32(voxel[4]); // rot
-			writer.put_8(voxel[5]);  // vflip
-			// The minimal.txt has a 7th element (index 6), seemingly an int
-			if (voxel.size() > 6) {
-				writer.put_32(voxel[6]);
-			} else {
-				writer.put_32(0);
-			}
+	// voxel_data
+	Array voxel_data = level_state_data["voxel_data"];
+	writer.put_32(voxel_data.size());
+
+	UtilityFunctions::print("Serializing voxel_data, count: ", voxel_data.size());
+	Vector3i last_position = Vector3i(0, 0, 0);
+	for (int i = 0; i < voxel_data.size(); i++) {
+		Array voxel = voxel_data[i];
+		Vector3i v = voxel[0];
+		Vector3i delta = v - last_position;
+		//if deltas all fit within a signed 8 bit int, we can use that
+		if (delta.x >= -128 && delta.x <= 127 && delta.y >= -128 && delta.y <= 127 && delta.z >= -128 && delta.z <= 127) {
+			writer.put_8(0);
+			writer.put_s8(static_cast<int8_t>(delta.x));
+			writer.put_s8(static_cast<int8_t>(delta.y));
+			writer.put_s8(static_cast<int8_t>(delta.z));
+		} else {
+			writer.put_8(1);
+			writer.put_16(v.x);
+			writer.put_16(v.y);
+			writer.put_16(v.z);
 		}
-
-		// layers
-		Array layers = level_state_data["layers"];
-		writer.put_32(layers.size());
-		for (int i = 0; i < layers.size(); i++) {
-			Dictionary layer = layers[i];
-			writer.put_utf8_string(layer["name"]);
-			writer.put_8(layer["visible"]);
-		}
-
-		// selected_layer_idx
-		writer.put_32(level_state_data["selected_layer_idx"]);
-
-	} else if (level_state_data_var.get_type() == Variant::ARRAY) {
-		// Fallback
-		Array level_state_data = level_state_data_var;
-		if (level_state_data.size() != 4) {
-			ERR_PRINT(vformat("serialize_game_data: Invalid level_state_data size (expected 4, got %d)", level_state_data.size()));
-			return PackedByteArray();
-		}
-
-		writer.put_32(level_state_data[0]); // version
-
-		Array voxel_data = level_state_data[1];
-		writer.put_32(voxel_data.size());
-		for (int i = 0; i < voxel_data.size(); i++) {
-			Array voxel = voxel_data[i];
-			Vector3i v = voxel[0];
-			writer.put_32(v.x);
-			writer.put_32(v.y);
-			writer.put_32(v.z);
-			writer.put_32(voxel[1]);
-			writer.put_32(voxel[2]);
-			writer.put_32(voxel[3]);
-			writer.put_32(voxel[4]);
-			writer.put_8(voxel[5]);
-			if (voxel.size() > 6) {
-				writer.put_32(voxel[6]);
-			} else {
-				writer.put_32(0);
-			}
-		}
-
-		Array layers = level_state_data[2];
-		writer.put_32(layers.size());
-		for (int i = 0; i < layers.size(); i++) {
-			Dictionary layer = layers[i];
-			writer.put_utf8_string(layer["name"]);
-			writer.put_8(layer["visible"]);
-		}
-
-		writer.put_32(level_state_data[3]); // selected_layer_idx
-	} else {
-		ERR_PRINT("serialize_game_data: level_state_data is neither Array nor Dictionary");
-		return PackedByteArray();
+		last_position = v;
+		writer.put_8(voxel[1]); // blocktype
+		writer.put_8(voxel[2]); // tx
+		writer.put_8(voxel[3]); // ty
+		//rot goes from 0 to 3, vflip is bool, so encode together
+		int rot = voxel[4];
+		int vflip = voxel[5] ? 1 : 0;
+		writer.put_8(rot + vflip * 4); // combined rot (0-3) + vflip (0-1) * 4
+		writer.put_8(voxel[6]);
 	}
+
+	// layers
+
+	Array layers = level_state_data["layers"];
+	UtilityFunctions::print("Serializing layers, count: ", layers.size());
+	writer.put_8(layers.size());
+	for (int i = 0; i < layers.size(); i++) {
+		Dictionary layer = layers[i];
+		writer.put_utf8_string(layer["name"]);
+		writer.put_8(layer["visible"]);
+	}
+
+	// selected_layer_idx
+	writer.put_8(level_state_data["selected_layer_idx"]);
 
 	// 1: camera_pos
 	Vector3 camera_pos = p_savedat[1];
@@ -242,39 +235,26 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 
 	// 4: entities
 	Array entities = p_savedat[4];
-	writer.put_32(entities.size());
+	UtilityFunctions::print("Serializing entities, count: ", entities.size());
+	writer.put_16(entities.size());
 	for (int i = 0; i < entities.size(); i++) {
 		Dictionary entity = entities[i];
 		writer.put_utf8_string(entity["name"]);
 		
-		if (entity.has("type")) {
-			writer.put_32(entity["type"]);
-		} else {
-			writer.put_32(0);
-		}
+		int32_t entity_type = entity["type"];
+		writer.put_8(entity_type);
 
 		// Handle position type (Vector3 vs Vector3i)
-		Vector3 pos;
-		uint8_t pos_type = 0; // 0 = Vector3, 1 = Vector3i
-		if (entity.has("position")) {
-			Variant p = entity["position"];
-			if (p.get_type() == Variant::VECTOR3I) {
-				Vector3i pi = p;
-				pos = Vector3(pi.x, pi.y, pi.z);
-				pos_type = 1;
-			} else {
-				pos = p;
-			}
-		}
-		writer.put_8(pos_type);
-		writer.put_float(pos.x);
-		writer.put_float(pos.y);
-		writer.put_float(pos.z);
+		Vector3i pos = entity["position"];
+		writer.put_16(pos.x);
+		writer.put_16(pos.y);
+		writer.put_16(pos.z);
 		
 		if (entity.has("dir")) {
-			writer.put_32(entity["dir"]);
+			int32_t dir = entity["dir"];
+			writer.put_8(dir+1);
 		} else {
-			writer.put_32(0);
+			writer.put_8(0);
 		}
 
 		if (entity.has("meta")) {
@@ -289,16 +269,16 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 			writer.put_utf8_string("");
 		}
 
-		if (entity.has("type") && (int)entity["type"] == 3) {
+		if (entity_type == 3) {
 			Vector3i size_EDS = entity.has("size_EDS") ? (Vector3i)entity["size_EDS"] : Vector3i();
-			writer.put_32(size_EDS.x);
-			writer.put_32(size_EDS.y);
-			writer.put_32(size_EDS.z);
+			writer.put_16(size_EDS.x);
+			writer.put_16(size_EDS.y);
+			writer.put_16(size_EDS.z);
 
 			Vector3i size_WUN = entity.has("size_WUN") ? (Vector3i)entity["size_WUN"] : Vector3i();
-			writer.put_32(size_WUN.x);
-			writer.put_32(size_WUN.y);
-			writer.put_32(size_WUN.z);
+			writer.put_16(size_WUN.x);
+			writer.put_16(size_WUN.y);
+			writer.put_16(size_WUN.z);
 		}
 	}
 
@@ -315,29 +295,31 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	Dictionary level_state_data;
 	
 	// version
-	level_state_data[StringName("version")] = reader.get_32();
+	level_state_data[StringName("version")] = reader.get_8();
 	
 	// voxel_data
 	TypedArray<Array> voxel_data;
 	int voxel_count = reader.get_32();
 	UtilityFunctions::print("Deserializing voxel_data, count: ", voxel_count);
-	
-	// We want to reconstruct typed array if possible, or at least match input structure.
-	// minimal.txt had Array[Array].
-	
+	Vector3i last_position = Vector3i(0, 0, 0);
 	for (int i = 0; i < voxel_count; i++) {
 		Array voxel;
-		int x = reader.get_32();
-		int y = reader.get_32();
-		int z = reader.get_32();
-		voxel.append(Vector3i(x, y, z));
+		uint8_t position_type = reader.get_8();
+		if (position_type == 0) {
+			last_position += Vector3i(reader.get_s8(), reader.get_s8(), reader.get_s8());
+		} else {
+			last_position = Vector3i(reader.get_16(), reader.get_16(), reader.get_16());
+		}
+
+		voxel.append(last_position);
 		
-		voxel.append(reader.get_32()); // blocktype
-		voxel.append(reader.get_32()); // tx
-		voxel.append(reader.get_32()); // ty
-		voxel.append(reader.get_32()); // rot
-		voxel.append(reader.get_8() != 0);  // vflip
-		voxel.append(reader.get_32()); // extra int
+		voxel.append(reader.get_8()); // blocktype
+		voxel.append(reader.get_8()); // tx
+		voxel.append(reader.get_8()); // ty
+		uint8_t rot_vflip = reader.get_8();
+		voxel.append(rot_vflip & 3); // rot (bits 0-1)
+		voxel.append((rot_vflip & 4) != 0);  // vflip (bit 2)
+		voxel.append(reader.get_8()); // extra int
 		
 		voxel_data.append(voxel);
 	}
@@ -345,7 +327,7 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	
 	// layers
 	Array layers;
-	int layers_count = reader.get_32();
+	int layers_count = reader.get_8();
 	UtilityFunctions::print("Deserializing layers, count: ", layers_count);
 	for (int i = 0; i < layers_count; i++) {
 		Dictionary layer;
@@ -356,7 +338,7 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	level_state_data[StringName("layers")] = layers;
 	
 	// selected_layer_idx
-	level_state_data[StringName("selected_layer_idx")] = reader.get_32();
+	level_state_data[StringName("selected_layer_idx")] = reader.get_8();
 	
 	savedat.append(level_state_data);
 	
@@ -383,28 +365,23 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	
 	// 4: entities
 	TypedArray<Dictionary> entities;
-	int entities_count = reader.get_32();
+	int entities_count = reader.get_16();
 	UtilityFunctions::print("Deserializing entities, count: ", entities_count);
 	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity;
 		entity[StringName("name")] = reader.get_utf8_string();
-		entity[StringName("type")] = reader.get_32();
+		int32_t entity_type = reader.get_8();
+		entity[StringName("type")] = entity_type;
+
+		Vector3i pos;
+		pos.x = reader.get_16();
+		pos.y = reader.get_16();
+		pos.z = reader.get_16();
+		entity[StringName("position")] = pos;
 		
-		uint8_t pos_type = reader.get_8();
-		Vector3 pos;
-		pos.x = reader.get_float();
-		pos.y = reader.get_float();
-		pos.z = reader.get_float();
-		
-		if (pos_type == 1) {
-			entity[StringName("position")] = Vector3i(pos.x, pos.y, pos.z);
-		} else {
-			entity[StringName("position")] = pos;
-		}
-		
-		int dir = reader.get_32();
-		if (dir != 0 || (int)entity[StringName("type")] != 3) {
-			entity[StringName("dir")] = dir;
+		int dir = reader.get_8();
+		if (dir != 0) {
+			entity[StringName("dir")] = dir - 1;
 		}
 		entity[StringName("meta")] = reader.get_utf8_string();
 		
@@ -413,17 +390,17 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 			entity[StringName("asset_name")] = asset_name;
 		}
 		
-		if ((int)entity[StringName("type")] == 3) {
+		if (entity_type == 3) {
 			Vector3i size_EDS;
-			size_EDS.x = reader.get_32();
-			size_EDS.y = reader.get_32();
-			size_EDS.z = reader.get_32();
+			size_EDS.x = reader.get_16();
+			size_EDS.y = reader.get_16();
+			size_EDS.z = reader.get_16();
 			entity[StringName("size_EDS")] = size_EDS;
 
 			Vector3i size_WUN;
-			size_WUN.x = reader.get_32();
-			size_WUN.y = reader.get_32();
-			size_WUN.z = reader.get_32();
+			size_WUN.x = reader.get_16();
+			size_WUN.y = reader.get_16();
+			size_WUN.z = reader.get_16();
 			entity[StringName("size_WUN")] = size_WUN;
 		}
 
