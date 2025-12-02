@@ -33,14 +33,14 @@ private:
 		// Pre-calculated wobbled vertices could be cached per voxel, not per shape
 	};
 
-	// database[shape_index][rotation][vflip]
-	std::vector<std::vector<std::vector<ShapeVariant>>> shape_database;
-
-	// Direct array lookup: key = shape_type | (rotation << 4) | (vflip << 6)
+	// Flattened array: key = shape_type | (rotation << 4) | (vflip << 6)
 	// Encodes all combinations in a single byte: shape_type (0-12, 4 bits), rotation (0-3, 2 bits), vflip (0-1, 1 bit)
 	// 256 possible combinations - direct array access with zero hash overhead!
-	const ShapeVariant* shape_lookup_array[256];
+	ShapeVariant shape_database[256];
 	bool shape_lookup_valid[256]; // Track which entries are valid
+	
+	// Direct array lookup: points to shape_database entries
+	const ShapeVariant* shape_lookup_array[256];
 	
 	// Pre-computed face occupancies: flattened array [key * 6 + face_dir] = occupancy value
 	// Eliminates repeated shape->faces[dir]->face_occupancy indirection in neighbor checks

@@ -109,8 +109,6 @@ void VoxelMesher::set_texture_dimensions(float width, float height) {
 }
 
 void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns) {
-	shape_database.clear();
-	
 	// Clear direct array lookup - initialize all entries as invalid
 	for (int i = 0; i < 256; i++) {
 		shape_lookup_valid[i] = false;
@@ -138,22 +136,24 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 		uv_patterns.push_back(uv_vec);
 	}
 
-	// Parse Shape Database
-	// database[shape_index][rotation][vflip]
+	// Parse Shape Database - store directly into flattened array
+	// Key format: shape_type | (rotation << 4) | (vflip << 6)
+	// Encodes all combinations in a single byte (shape_type: 0-12, rotation: 0-3, vflip: 0-1)
 	for (int i = 0; i < gd_database.size(); i++) {
 		Array shape_rots_arr = gd_database[i];
-		std::vector<std::vector<ShapeVariant>> rots_vec;
 		
 		for (int r = 0; r < shape_rots_arr.size(); r++) {
 			Array shape_flips_arr = shape_rots_arr[r];
-			std::vector<ShapeVariant> flips_vec;
 
 			for (int f = 0; f < shape_flips_arr.size(); f++) {
 				Dictionary shape_dict = shape_flips_arr[f];
-				ShapeVariant sv;
+				uint8_t key = ((uint8_t)i) | ((uint8_t)r << 4) | ((uint8_t)f << 6);
+				
+				ShapeVariant &sv = shape_database[key];
 
 				// Vertices
 				Array verts = shape_dict["vertices"];
+				sv.vertices.clear();
 				for (int v = 0; v < verts.size(); v++) {
 					sv.vertices.push_back(verts[v]);
 				}
@@ -165,11 +165,13 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				Array occupyface = shape_dict["occupyface"];
 				Array face_occupancy = shape_dict["face_occupancy"];
 
+				sv.faces.clear();
 				for (int face_idx = 0; face_idx < faces.size(); face_idx++) {
 					FaceData fd;
 					
 					// Indices
 					Array indices = faces[face_idx];
+					fd.indices.clear();
 					for (int k = 0; k < indices.size(); k++) {
 						fd.indices.push_back(indices[k]);
 					}
@@ -189,27 +191,11 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 					sv.faces.push_back(fd);
 				}
 
-				flips_vec.push_back(sv);
-			}
-			rots_vec.push_back(flips_vec);
-		}
-		shape_database.push_back(rots_vec);
-	}
-	
-	// Build direct array lookup for O(1) shape access with zero overhead!
-	// Key format: shape_type | (rotation << 4) | (vflip << 6)
-	// Encodes all combinations in a single byte (shape_type: 0-12, rotation: 0-3, vflip: 0-1)
-	for (size_t shape_type = 0; shape_type < shape_database.size(); shape_type++) {
-		const auto &rots = shape_database[shape_type];
-		for (size_t rotation = 0; rotation < rots.size(); rotation++) {
-			const auto &flips = rots[rotation];
-			for (size_t vflip = 0; vflip < flips.size(); vflip++) {
-				uint8_t key = ((uint8_t)shape_type) | ((uint8_t)rotation << 4) | ((uint8_t)vflip << 6);
-				shape_lookup_array[key] = &flips[vflip];
+				// Build direct array lookup for O(1) shape access with zero overhead!
+				shape_lookup_array[key] = &shape_database[key];
 				shape_lookup_valid[key] = true;
 				
 				// Pre-cache face occupancies for all 6 faces - eliminates shape->faces[dir] indirection
-				const ShapeVariant &sv = flips[vflip];
 				const size_t face_count = sv.faces.size();
 				for (int face_dir = 0; face_dir < 6; face_dir++) {
 					if (face_dir < (int)face_count) {
