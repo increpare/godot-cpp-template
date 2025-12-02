@@ -1,4 +1,5 @@
 #include "example_class.h"
+#include <cstring>
 
 void OeufSerializer::_bind_methods() {
 	godot::ClassDB::bind_method(D_METHOD("print_type", "variant"), &OeufSerializer::print_type);
@@ -20,12 +21,17 @@ void OeufSerializer::print_array(const TypedArray<Vector3i> &p_array) const {
 }
 
 PackedByteArray OeufSerializer::serialize_array(const TypedArray<Vector3i> &p_array) const {
+	int count = p_array.size();
 	PackedByteArray p_packed_array;
-	for (int i = 0; i < p_array.size(); i++) {
+	p_packed_array.resize(count * 3); // Pre-allocate exact size
+	
+	uint8_t *data_ptr = p_packed_array.ptrw();
+	for (int i = 0; i < count; i++) {
 		Vector3i v = p_array[i];
-		p_packed_array.push_back(v.x);
-		p_packed_array.push_back(v.y);
-		p_packed_array.push_back(v.z);
+		int base = i * 3;
+		data_ptr[base] = static_cast<uint8_t>(v.x);
+		data_ptr[base + 1] = static_cast<uint8_t>(v.y);
+		data_ptr[base + 2] = static_cast<uint8_t>(v.z);
 	}
 	return p_packed_array;
 }
@@ -36,12 +42,22 @@ struct BufferWriter {
 	int offset = 0;
 
 	void ensure_space(int p_bytes) {
-		if (data.size() < offset + p_bytes) {
-			int new_size = (data.size() == 0) ? 256 : data.size() * 2;
-			while (new_size < offset + p_bytes) {
-				new_size *= 2;
+		int needed = offset + p_bytes;
+		int current_size = data.size();
+		if (current_size < needed) {
+			// Grow more aggressively - at least 2x or to needed size
+			int new_size = current_size == 0 ? 512 : current_size * 2;
+			if (new_size < needed) {
+				new_size = needed + (needed / 4); // Add 25% headroom
 			}
 			data.resize(new_size);
+		}
+	}
+
+	// Pre-allocate buffer with estimated size to reduce reallocations
+	void reserve(int p_estimated_size) {
+		if (p_estimated_size > 0 && data.size() < p_estimated_size) {
+			data.resize(p_estimated_size);
 		}
 	}
 
@@ -80,13 +96,24 @@ struct BufferWriter {
 		PackedByteArray utf8 = p_string.to_utf8_buffer();
 		int len = utf8.size();
 		put_32(len);
-		ensure_space(len);
-		// Manual copy since we don't have append_array with direct offset control easily exposed without resizing exact
-		const uint8_t *r = utf8.ptr();
-		for (int i = 0; i < len; i++) {
-			data.encode_u8(offset + i, r[i]);
+		if (len > 0) {
+			ensure_space(len);
+			// Use direct memory copy for better performance
+			const uint8_t *src = utf8.ptr();
+			uint8_t *dst = data.ptrw() + offset;
+			memcpy(dst, src, len);
+			offset += len;
 		}
-		offset += len;
+	}
+
+	// Optimized method to write raw bytes directly
+	void put_bytes(const uint8_t *p_bytes, int p_len) {
+		if (p_len > 0) {
+			ensure_space(p_len);
+			uint8_t *dst = data.ptrw() + offset;
+			memcpy(dst, p_bytes, p_len);
+			offset += p_len;
+		}
 	}
 
 	PackedByteArray get_packed_byte_array() {
@@ -152,11 +179,6 @@ struct BufferReader {
 };
 
 PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) const {
-	BufferWriter writer;
-
-	// Structure of savedat:
-	// ... (same comments as before)
-
 	if (p_savedat.size() != 5) {
 		ERR_PRINT(vformat("serialize_game_data: Invalid savedat array size (expected 5, got %d)", p_savedat.size()));
 		return PackedByteArray();
@@ -165,16 +187,26 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	// 0: level_state_data
 	Dictionary level_state_data = p_savedat[0];
 	
+	// Estimate buffer size: version (1) + voxel_count (4) + entities_count (2) + rough estimates
+	Array voxel_data = level_state_data["voxel_data"];
+	Array entities = p_savedat[4];
+	int voxel_count = voxel_data.size();
+	int entities_count = entities.size();
+	
+	// Rough estimate: ~10 bytes per voxel, ~50 bytes per entity, plus overhead
+	int estimated_size = 64 + (voxel_count * 10) + (entities_count * 50);
+	
+	BufferWriter writer;
+	writer.reserve(estimated_size);
+	
 	// version
 	writer.put_8(level_state_data["version"]);
 
 	// voxel_data
-	Array voxel_data = level_state_data["voxel_data"];
-	writer.put_32(voxel_data.size());
+	writer.put_32(voxel_count);
 
-	UtilityFunctions::print("Serializing voxel_data, count: ", voxel_data.size());
 	Vector3i last_position = Vector3i(0, 0, 0);
-	for (int i = 0; i < voxel_data.size(); i++) {
+	for (int i = 0; i < voxel_count; i++) {
 		Array voxel = voxel_data[i];
 		Vector3i v = voxel[0];
 		Vector3i delta = v - last_position;
@@ -202,11 +234,10 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	}
 
 	// layers
-
 	Array layers = level_state_data["layers"];
-	UtilityFunctions::print("Serializing layers, count: ", layers.size());
-	writer.put_8(layers.size());
-	for (int i = 0; i < layers.size(); i++) {
+	int layers_count = layers.size();
+	writer.put_8(layers_count);
+	for (int i = 0; i < layers_count; i++) {
 		Dictionary layer = layers[i];
 		writer.put_utf8_string(layer["name"]);
 		writer.put_8(layer["visible"]);
@@ -234,10 +265,8 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	writer.put_float(camera_rot_rotation.z);
 
 	// 4: entities
-	Array entities = p_savedat[4];
-	UtilityFunctions::print("Serializing entities, count: ", entities.size());
-	writer.put_16(entities.size());
-	for (int i = 0; i < entities.size(); i++) {
+	writer.put_16(entities_count);
+	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity = entities[i];
 		writer.put_utf8_string(entity["name"]);
 		
@@ -250,23 +279,44 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 		writer.put_16(pos.y);
 		writer.put_16(pos.z);
 		
+		// Calculate flags for optional fields first to save space
+		uint8_t flags = 0;
+		String meta_str;
+		String asset_name_str;
+		int32_t dir_value = 0;
+		
 		if (entity.has("dir")) {
-			int32_t dir = entity["dir"];
-			writer.put_8(dir+1);
-		} else {
-			writer.put_8(0);
+			dir_value = entity["dir"];
+			flags |= 0x01; // bit 0: has dir
 		}
-
+		
 		if (entity.has("meta")) {
-			writer.put_utf8_string(entity["meta"]);
-		} else {
-			writer.put_utf8_string("");
+			meta_str = entity["meta"];
+			if (!meta_str.is_empty()) {
+				flags |= 0x02; // bit 1: has non-empty meta
+			}
+		}
+		
+		if (entity.has("asset_name")) {
+			asset_name_str = entity["asset_name"];
+			if (!asset_name_str.is_empty()) {
+				flags |= 0x04; // bit 2: has non-empty asset_name
+			}
+		}
+		
+		// Write flags byte, then conditional fields
+		writer.put_8(flags);
+		
+		if ((flags & 0x01) != 0) {
+			writer.put_8(static_cast<uint8_t>(dir_value + 1));
+		}
+		
+		if ((flags & 0x02) != 0) {
+			writer.put_utf8_string(meta_str);
 		}
 
-		if (entity.has("asset_name")) {
-			writer.put_utf8_string(entity["asset_name"]);
-		} else {
-			writer.put_utf8_string("");
+		if ((flags & 0x04) != 0) {
+			writer.put_utf8_string(asset_name_str);
 		}
 
 		if (entity_type == 3) {
@@ -300,7 +350,6 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	// voxel_data
 	TypedArray<Array> voxel_data;
 	int voxel_count = reader.get_32();
-	UtilityFunctions::print("Deserializing voxel_data, count: ", voxel_count);
 	Vector3i last_position = Vector3i(0, 0, 0);
 	for (int i = 0; i < voxel_count; i++) {
 		Array voxel;
@@ -328,7 +377,6 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	// layers
 	Array layers;
 	int layers_count = reader.get_8();
-	UtilityFunctions::print("Deserializing layers, count: ", layers_count);
 	for (int i = 0; i < layers_count; i++) {
 		Dictionary layer;
 		layer[StringName("name")] = reader.get_utf8_string();
@@ -366,7 +414,6 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	// 4: entities
 	TypedArray<Dictionary> entities;
 	int entities_count = reader.get_16();
-	UtilityFunctions::print("Deserializing entities, count: ", entities_count);
 	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity;
 		entity[StringName("name")] = reader.get_utf8_string();
@@ -379,15 +426,23 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 		pos.z = reader.get_16();
 		entity[StringName("position")] = pos;
 		
-		int dir = reader.get_8();
-		if (dir != 0) {
+		// Read flags byte for optional fields
+		uint8_t flags = reader.get_8();
+		
+		if ((flags & 0x01) != 0) {
+			// Has dir
+			int dir = reader.get_8();
 			entity[StringName("dir")] = dir - 1;
 		}
-		entity[StringName("meta")] = reader.get_utf8_string();
 		
-		String asset_name = reader.get_utf8_string();
-		if (!asset_name.is_empty()) {
-			entity[StringName("asset_name")] = asset_name;
+		if ((flags & 0x02) != 0) {
+			// Has non-empty meta
+			entity[StringName("meta")] = reader.get_utf8_string();
+		}
+		
+		if ((flags & 0x04) != 0) {
+			// Has non-empty asset_name
+			entity[StringName("asset_name")] = reader.get_utf8_string();
 		}
 		
 		if (entity_type == 3) {
