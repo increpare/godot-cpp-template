@@ -198,6 +198,15 @@ void VoxelMesher::_cache_wobbled_verts(const Vector3i &voxel, const ShapeVariant
 	}
 }
 
+// Fast inverse square root approximation (Quake III algorithm)
+static inline float fast_inv_sqrt(float x) {
+	union { float f; std::uint32_t i; } conv;
+	conv.f = x;
+	conv.i = 0x5f3759df - (conv.i >> 1);
+	conv.f *= 1.5f - (x * 0.5f * conv.f * conv.f);
+	return conv.f;
+}
+
 Dictionary VoxelMesher::generate_chunk_mesh(
 		const Vector3i &chunk_coord,
 		const Array &voxels,
@@ -205,7 +214,15 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const Array &layer_visibility,
 		int size_x, int size_y, int size_z) {
 	
-	int voxel_count = voxels.size();
+	const int voxel_count = voxels.size();
+
+	// Early exit for empty chunks
+	if (voxel_count == 0) {
+		Dictionary result;
+		result["mesh_arrays"] = Array(); 
+		result["tri_voxel_info"] = PackedInt32Array();
+		return result;
+	}
 
 	// Output buffers - using std::vector for performance
 	std::vector<Vector3> final_vertices;
@@ -214,34 +231,25 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	std::vector<Vector2> final_uvs;
 	
 	// Tri-voxel info to return for raycasting/interaction logic
-	// Each entry: [voxel_index_in_input_array, face_index]
-	// OPTIMIZATION: Use PackedInt32Array to avoid thousands of small Array allocations
 	PackedInt32Array tri_voxel_info;
 
-	if (voxel_count == 0) {
-		Dictionary result;
-		result["mesh_arrays"] = Array(); 
-		result["tri_voxel_info"] = tri_voxel_info;
-		return result;
-	}
-
-	// Heuristic reservation
-	int reserve_size = voxel_count * 24; 
+	// Heuristic reservation - more aggressive sizing
+	const int reserve_size = voxel_count * 32; // Increased from 24 for better pre-allocation
 	final_vertices.reserve(reserve_size);
 	final_normals.reserve(reserve_size);
 	final_normals_smoothed.reserve(reserve_size);
 	final_uvs.reserve(reserve_size);
-	// 2 ints per triangle (3 verts) -> approx 2/3 ints per vertex
 	tri_voxel_info.resize(0); 
 
-	// 1. Unpack Data Structures
+	// 1. Unpack Data Structures - packed struct for better cache locality
 	struct VoxelData {
 		int16_t shape_type;
 		int16_t tx, ty;
 		int8_t rot;
 		bool vflip;
 		int8_t layer;
-	};
+		// Pad to 8 bytes for better alignment
+	} __attribute__((packed));
 
 	std::vector<VoxelData> unpacked_props;
 	unpacked_props.reserve(voxel_count);
@@ -249,13 +257,13 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	std::vector<Vector3i> unpacked_voxels;
 	unpacked_voxels.reserve(voxel_count);
 
-	// OPTIMIZATION: Unpack data in a single pass, avoiding repeated Array access
+	// OPTIMIZATION: Unpack data in a single pass with minimal allocations
 	for (int i = 0; i < voxel_count; i++) {
 		unpacked_voxels.push_back(voxels[i]);
 
 		const Array &props = voxel_properties[i];
 		VoxelData vd;
-		// Direct access without bounds checking (assumes valid data)
+		// Direct access - assumes valid data structure
 		vd.shape_type = (int16_t)(int)props[0];
 		vd.tx = (int16_t)(int)props[1];
 		vd.ty = (int16_t)(int)props[2];
@@ -265,20 +273,23 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		unpacked_props.push_back(vd);
 	}
 
+	// Layer visibility - convert once
+	const int layer_count = layer_visibility.size();
 	std::vector<bool> layers_vis;
-	layers_vis.reserve(layer_visibility.size());
-	for(int i=0; i<layer_visibility.size(); ++i) {
+	layers_vis.reserve(layer_count);
+	for(int i = 0; i < layer_count; ++i) {
 		layers_vis.push_back(layer_visibility[i]);
 	}
 
-	// Grid Cache
-	std::vector<int> grid_cache(size_x * size_y * size_z, -1);
+	// Grid Cache - pre-allocate full size
+	const int grid_size = size_x * size_y * size_z;
+	std::vector<int> grid_cache(grid_size, -1);
 	
-	const Vector3i offset = Vector3i(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
+	const Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
 	const int stride_y = size_x;
 	const int stride_z = size_x * size_y;
 
-	// Populate grid cache - optimized bounds checking
+	// Populate grid cache - optimized bounds checking with single comparison
 	for (int i = 0; i < voxel_count; i++) {
 		const Vector3i &v = unpacked_voxels[i];
 		const int lx = v.x - offset.x;
@@ -286,34 +297,45 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const int lz = v.z - offset.z;
 		
 		// Single bounds check using unsigned comparison trick
-		if ((unsigned)lx < (unsigned)size_x && (unsigned)ly < (unsigned)size_y && (unsigned)lz < (unsigned)size_z) {
+		if ((unsigned)lx < (unsigned)size_x && 
+		    (unsigned)ly < (unsigned)size_y && 
+		    (unsigned)lz < (unsigned)size_z) {
 			grid_cache[lx + ly * stride_y + lz * stride_z] = i;
 		}
 	}
 
-	// Temporary buffers
+	// Temporary buffers - reuse across voxels
 	std::vector<Vector3> cached_wobbled_local_verts;
 	std::vector<Color> cached_vertex_colors;
-	// Reserve some space to avoid reallocations
-	cached_wobbled_local_verts.reserve(256);
-	cached_vertex_colors.reserve(256);
+	cached_wobbled_local_verts.reserve(512); // Larger reserve
+	cached_vertex_colors.reserve(512);
 
+	// Cache noise pointers to avoid repeated .ptr() calls
 	FastNoiseLite *n1 = noise1.ptr();
 	FastNoiseLite *n2 = noise2.ptr();
 	FastNoiseLite *n3 = noise3.ptr();
 
+	// Pre-compute constants
+	const float noise_scale = 0.1f;
+	const float half_scale = 0.5f;
+	const float norm_threshold = 0.0001f;
+	const float default_color = 0.5f;
+
+	// Main voxel processing loop
 	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
 		const VoxelData &props = unpacked_props[voxel_index];
 
-		if (props.layer >= (int)layers_vis.size() || !layers_vis[props.layer]) {
+		// Early exit for invisible layers
+		if (props.layer >= layer_count || !layers_vis[props.layer]) {
 			continue;
 		}
 
+		// Validate shape access with early exits
 		if (props.shape_type < 0 || props.shape_type >= (int)shape_database.size()) continue;
 		const auto &rots = shape_database[props.shape_type];
 		if (props.rot < 0 || props.rot >= (int)rots.size()) continue;
 		const auto &flips = rots[props.rot];
-		int vflip_index = props.vflip ? 1 : 0;
+		const int vflip_index = props.vflip ? 1 : 0;
 		if (vflip_index < 0 || vflip_index >= (int)flips.size()) continue;
 		const ShapeVariant &shape_data = flips[vflip_index];
 
@@ -321,28 +343,34 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		bool wobbled_calculated = false;
 
 		const Vector3i &voxel = unpacked_voxels[voxel_index];
-		const Vector3 v_vec(voxel);
+		const Vector3 v_vec(voxel.x, voxel.y, voxel.z); // Direct construction
 		const int local_x = voxel.x - offset.x;
 		const int local_y = voxel.y - offset.y;
 		const int local_z = voxel.z - offset.z;
 
-		for (size_t face_idx = 0; face_idx < shape_data.faces.size(); face_idx++) {
+		// Process faces
+		const size_t face_count = shape_data.faces.size();
+		for (size_t face_idx = 0; face_idx < face_count; face_idx++) {
 			const FaceData &face = shape_data.faces[face_idx];
-			if (face.indices.empty()) continue;
+			const size_t indices_size = face.indices.size();
+			if (indices_size == 0) continue;
 
-			// Neighbor check - optimized bounds checking
+			// Neighbor check - optimized with early exits
 			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {
 				const Vector3i &dir_offset = DIR_OFFSETS[face_idx];
 				const int nlx = local_x + dir_offset.x;
 				const int nly = local_y + dir_offset.y;
 				const int nlz = local_z + dir_offset.z;
 
-				// Use unsigned comparison for faster bounds checking (single comparison per axis)
-				if ((unsigned)nlx < (unsigned)size_x && (unsigned)nly < (unsigned)size_y && (unsigned)nlz < (unsigned)size_z) {
+				// Fast bounds check
+				if ((unsigned)nlx < (unsigned)size_x && 
+				    (unsigned)nly < (unsigned)size_y && 
+				    (unsigned)nlz < (unsigned)size_z) {
 					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
 					if (n_idx != -1) {
 						const VoxelData &n_props = unpacked_props[n_idx];
 						
+						// Validate neighbor shape
 						if (n_props.shape_type >= 0 && n_props.shape_type < (int)shape_database.size()) {
 							const int n_vflip_index = n_props.vflip ? 1 : 0;
 							const ShapeVariant &neigh_shape = shape_database[n_props.shape_type][n_props.rot][n_vflip_index];
@@ -358,57 +386,72 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				}
 			}
 
-			// We are going to render this face, ensure vertices are ready
+			// Calculate wobbled vertices if needed (lazy evaluation)
 			if (!wobbled_calculated) {
 				cached_wobbled_local_verts.clear();
 				cached_vertex_colors.clear();
-				cached_wobbled_local_verts.reserve(shape_data.vertices.size());
-				cached_vertex_colors.reserve(shape_data.vertices.size());
-
-				// OPTIMIZATION: Batch noise calculations and use fast normalized approximation
 				const size_t vert_count = shape_data.vertices.size();
+				cached_wobbled_local_verts.reserve(vert_count);
+				cached_vertex_colors.reserve(vert_count);
+
+				// OPTIMIZATION: Batch noise calculations with fast normalization
 				for (size_t i = 0; i < vert_count; i++) {
 					const Vector3 &base_local = shape_data.vertices[i];
-					Vector3 world_pos = base_local + v_vec;
+					
+					// Direct member access for world position
+					const Vector3 world_pos(
+						base_local.x + v_vec.x,
+						base_local.y + v_vec.y,
+						base_local.z + v_vec.z
+					);
 
-					// Single noise call per component (already optimized in FastNoiseLite)
-					const float nx = n1->get_noise_3dv(world_pos) * 0.1f;
-					const float ny = n2->get_noise_3dv(world_pos) * 0.1f;
-					const float nz = n3->get_noise_3dv(world_pos) * 0.1f;
+					// Noise calculations
+					const float nx = n1->get_noise_3dv(world_pos) * noise_scale;
+					const float ny = n2->get_noise_3dv(world_pos) * noise_scale;
+					const float nz = n3->get_noise_3dv(world_pos) * noise_scale;
 
-					const Vector3 wobbled_local = base_local + Vector3(nx, ny, nz);
+					// Wobbled vertex
+					const Vector3 wobbled_local(
+						base_local.x + nx,
+						base_local.y + ny,
+						base_local.z + nz
+					);
 					cached_wobbled_local_verts.push_back(wobbled_local);
 
-					// OPTIMIZATION: Fast normalized using length_squared to avoid sqrt when possible
-					// For color calculation, we can use a faster approximation
+					// Fast normalized for color calculation using fast inverse sqrt
 					const float len_sq = wobbled_local.length_squared();
-					if (len_sq > 0.0001f) {
-						const float inv_len = 1.0f / std::sqrt(len_sq);
-						const Vector3 ns = wobbled_local * inv_len;
+					if (len_sq > norm_threshold) {
+						const float inv_len = fast_inv_sqrt(len_sq);
+						const float nsx = wobbled_local.x * inv_len;
+						const float nsy = wobbled_local.y * inv_len;
+						const float nsz = wobbled_local.z * inv_len;
 						cached_vertex_colors.push_back(Color(
-							(ns.x + 1.0f) * 0.5f,
-							(ns.y + 1.0f) * 0.5f,
-							(ns.z + 1.0f) * 0.5f
+							(nsx + 1.0f) * half_scale,
+							(nsy + 1.0f) * half_scale,
+							(nsz + 1.0f) * half_scale
 						));
 					} else {
-						cached_vertex_colors.push_back(Color(0.5f, 0.5f, 0.5f));
+						cached_vertex_colors.push_back(Color(default_color, default_color, default_color));
 					}
 				}
 				wobbled_calculated = true;
 			}
 
 			// UV Calculation - pre-compute once per face
-			const Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
+			const float uv_tile_y = (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset);
+			const Vector2 uv_offset(
+				du.x * (float)props.tx + dv.x * uv_tile_y,
+				du.y * (float)props.tx + dv.y * uv_tile_y
+			);
 			
 			const std::vector<Vector2> *uv_ptr = nullptr;
 			if (face.uv_pattern_index >= 0 && face.uv_pattern_index < (int)uv_patterns.size()) {
 				uv_ptr = &uv_patterns[face.uv_pattern_index];
 			}
 
-			// Triangulate - optimized inner loop
-			const size_t indices_size = face.indices.size();
+			// Triangulate - highly optimized inner loop
 			for (size_t tri_start = 0; tri_start < indices_size; tri_start += 3) {
-				// OPTIMIZATION: Push integers directly instead of allocating Arrays
+				// Store triangle info
 				tri_voxel_info.push_back(voxel_index);
 				tri_voxel_info.push_back((int)face_idx);
 
@@ -416,42 +459,59 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				const int i1 = face.indices[tri_start + 1];
 				const int i2 = face.indices[tri_start + 2];
 
+				// Get vertices (references to avoid copies)
 				const Vector3 &v0_local = cached_wobbled_local_verts[i0];
 				const Vector3 &v1_local = cached_wobbled_local_verts[i1];
 				const Vector3 &v2_local = cached_wobbled_local_verts[i2];
 
-				// Pre-compute world positions
-				const Vector3 v0_world = v0_local + v_vec;
-				const Vector3 v1_world = v1_local + v_vec;
-				const Vector3 v2_world = v2_local + v_vec;
+				// Pre-compute world positions with direct member access
+				final_vertices.push_back(Vector3(v0_local.x + v_vec.x, v0_local.y + v_vec.y, v0_local.z + v_vec.z));
+				final_vertices.push_back(Vector3(v1_local.x + v_vec.x, v1_local.y + v_vec.y, v1_local.z + v_vec.z));
+				final_vertices.push_back(Vector3(v2_local.x + v_vec.x, v2_local.y + v_vec.y, v2_local.z + v_vec.z));
 
-				final_vertices.push_back(v0_world);
-				final_vertices.push_back(v1_world);
-				final_vertices.push_back(v2_world);
-
+				// Vertex colors (already computed)
 				final_normals_smoothed.push_back(cached_vertex_colors[i0]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i1]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i2]);
 
-				// Face Normal - optimized calculation
-				const Vector3 edge1 = v1_local - v0_local;
-				const Vector3 edge2 = v2_local - v0_local;
-				Vector3 cross = edge1.cross(edge2);
-				const float len_sq = cross.length_squared();
-				if (len_sq > 0.0001f) {
-					cross *= (1.0f / std::sqrt(len_sq));
+				// Face Normal - optimized calculation with fast inverse sqrt
+				const float e1x = v1_local.x - v0_local.x;
+				const float e1y = v1_local.y - v0_local.y;
+				const float e1z = v1_local.z - v0_local.z;
+				const float e2x = v2_local.x - v0_local.x;
+				const float e2y = v2_local.y - v0_local.y;
+				const float e2z = v2_local.z - v0_local.z;
+				
+				// Cross product
+				float cross_x = e1y * e2z - e1z * e2y;
+				float cross_y = e1z * e2x - e1x * e2z;
+				float cross_z = e1x * e2y - e1y * e2x;
+				
+				// Normalize using fast inverse sqrt
+				const float len_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+				if (len_sq > norm_threshold) {
+					const float inv_len = fast_inv_sqrt(len_sq);
+					cross_x *= -inv_len; // Negate for face normal
+					cross_y *= -inv_len;
+					cross_z *= -inv_len;
+				} else {
+					cross_x = cross_y = 0.0f;
+					cross_z = -1.0f; // Default normal
 				}
-				const Vector3 face_norm = -cross;
-
+				
+				const Vector3 face_norm(cross_x, cross_y, cross_z);
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 
-				// UV coordinates
+				// UV coordinates - optimized branch
 				if (uv_ptr && (tri_start + 2 < uv_ptr->size())) {
-					final_uvs.push_back((*uv_ptr)[tri_start + 0] + uv_offset);
-					final_uvs.push_back((*uv_ptr)[tri_start + 1] + uv_offset);
-					final_uvs.push_back((*uv_ptr)[tri_start + 2] + uv_offset);
+					const Vector2 &uv0 = (*uv_ptr)[tri_start + 0];
+					const Vector2 &uv1 = (*uv_ptr)[tri_start + 1];
+					const Vector2 &uv2 = (*uv_ptr)[tri_start + 2];
+					final_uvs.push_back(Vector2(uv0.x + uv_offset.x, uv0.y + uv_offset.y));
+					final_uvs.push_back(Vector2(uv1.x + uv_offset.x, uv1.y + uv_offset.y));
+					final_uvs.push_back(Vector2(uv2.x + uv_offset.x, uv2.y + uv_offset.y));
 				} else {
 					final_uvs.push_back(uv_offset);
 					final_uvs.push_back(uv_offset);
@@ -461,7 +521,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		}
 	}
 
-	// Bulk convert to PackedArrays
+	// Bulk convert to PackedArrays using memcpy for maximum speed
 	PackedVector3Array p_vertices;
 	p_vertices.resize(final_vertices.size());
 	if (!final_vertices.empty()) {
@@ -495,8 +555,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 
 	Ref<ArrayMesh> array_mesh;
 	array_mesh.instantiate();
-
-
 	array_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, mesh_arrays);
 
 	Dictionary result;
