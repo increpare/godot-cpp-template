@@ -110,7 +110,13 @@ void VoxelMesher::set_texture_dimensions(float width, float height) {
 
 void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns) {
 	shape_database.clear();
-	shape_lookup.clear(); // Clear flattened lookup table
+	
+	// Clear direct array lookup - initialize all entries as invalid
+	for (int i = 0; i < 256; i++) {
+		shape_lookup_valid[i] = false;
+		shape_lookup_array[i] = nullptr;
+	}
+	
 	uv_patterns.clear();
 	
 	std::map<String, int> pattern_name_to_index;
@@ -186,15 +192,17 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 		shape_database.push_back(rots_vec);
 	}
 	
-	// Build flattened lookup table for O(1) shape access
-	// Key format: (shape_type << 16) | (rotation << 8) | vflip
+	// Build direct array lookup for O(1) shape access with zero overhead!
+	// Key format: shape_type | (rotation << 4) | (vflip << 6)
+	// Encodes all combinations in a single byte (shape_type: 0-12, rotation: 0-3, vflip: 0-1)
 	for (size_t shape_type = 0; shape_type < shape_database.size(); shape_type++) {
 		const auto &rots = shape_database[shape_type];
 		for (size_t rotation = 0; rotation < rots.size(); rotation++) {
 			const auto &flips = rots[rotation];
 			for (size_t vflip = 0; vflip < flips.size(); vflip++) {
-				uint32_t key = ((uint32_t)shape_type << 16) | ((uint32_t)rotation << 8) | (uint32_t)vflip;
-				shape_lookup[key] = &flips[vflip];
+				uint8_t key = ((uint8_t)shape_type) | ((uint8_t)rotation << 4) | ((uint8_t)vflip << 6);
+				shape_lookup_array[key] = &flips[vflip];
+				shape_lookup_valid[key] = true;
 			}
 		}
 	}
@@ -597,17 +605,18 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			continue;
 		}
 
-		// Validate and cache shape access using flattened lookup table
-		uint32_t lookup_key = ((uint32_t)props.shape_type << 16) | ((uint32_t)props.rot << 8) | (props.vflip ? 1 : 0);
-		// Direct access is faster than .find() - eliminates iterator comparison overhead
-		auto lookup_it = shape_lookup.find(lookup_key);
-		if (lookup_it == shape_lookup.end()) {
+		// Validate and cache shape access using direct array lookup - single byte key!
+		// Encoding: shape_type | (rotation << 4) | (vflip << 6) - fits in 8 bits
+		uint8_t lookup_key = ((uint8_t)props.shape_type) | ((uint8_t)props.rot << 4) | ((props.vflip ? 1 : 0) << 6);
+		
+		// Direct array access - O(1) with zero hash overhead!
+		if (!shape_lookup_valid[lookup_key]) {
 			cache_entry.valid = false;
 			continue;
 		}
 		
-		// Cache the shape variant pointer - O(1) hash lookup, reused across all chunks!
-		cache_entry.shape_ptr = lookup_it->second;
+		// Cache the shape variant pointer - direct array access, fastest possible lookup!
+		cache_entry.shape_ptr = shape_lookup_array[lookup_key];
 		cache_entry.voxel_pos = unpacked_voxels[voxel_index];
 		cache_entry.local_x = cache_entry.voxel_pos.x - offset.x;
 		cache_entry.local_y = cache_entry.voxel_pos.y - offset.y;

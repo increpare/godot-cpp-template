@@ -36,9 +36,11 @@ private:
 	// database[shape_index][rotation][vflip]
 	std::vector<std::vector<std::vector<ShapeVariant>>> shape_database;
 
-	// Flattened lookup table: key = (shape_type << 16) | (rotation << 8) | vflip
-	// This eliminates 3-level nested vector lookups - single O(1) direct pointer access!
-	std::unordered_map<uint32_t, const ShapeVariant*> shape_lookup;
+	// Direct array lookup: key = shape_type | (rotation << 4) | (vflip << 6)
+	// Encodes all combinations in a single byte: shape_type (0-12, 4 bits), rotation (0-3, 2 bits), vflip (0-1, 1 bit)
+	// 256 possible combinations - direct array access with zero hash overhead!
+	const ShapeVariant* shape_lookup_array[256];
+	bool shape_lookup_valid[256]; // Track which entries are valid
 
 	// Pre-computed occupancy_fits lookup table [subject+1][container+1] -> bool
 	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6
