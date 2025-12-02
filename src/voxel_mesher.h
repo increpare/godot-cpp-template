@@ -10,6 +10,8 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <cstdint>
 
 namespace godot {
 
@@ -33,6 +35,10 @@ private:
 
 	// database[shape_index][rotation][vflip]
 	std::vector<std::vector<std::vector<ShapeVariant>>> shape_database;
+
+	// Flattened lookup table: key = (shape_type << 16) | (rotation << 8) | vflip
+	// This eliminates 3-level nested vector lookups - single O(1) direct pointer access!
+	std::unordered_map<uint32_t, const ShapeVariant*> shape_lookup;
 
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;
