@@ -1,5 +1,6 @@
 #include "example_class.h"
 #include <cstring>
+#include "godot_cpp/classes/marshalls.hpp"
 
 void OeufSerializer::_bind_methods() {
 	godot::ClassDB::bind_method(D_METHOD("print_type", "variant"), &OeufSerializer::print_type);
@@ -7,6 +8,8 @@ void OeufSerializer::_bind_methods() {
 	godot::ClassDB::bind_method(D_METHOD("serialize_array", "array"), &OeufSerializer::serialize_array);
 	godot::ClassDB::bind_method(D_METHOD("serialize_game_data", "savedat"), &OeufSerializer::serialize_game_data);
 	godot::ClassDB::bind_method(D_METHOD("deserialize_game_data", "buffer"), &OeufSerializer::deserialize_game_data);
+	godot::ClassDB::bind_method(D_METHOD("serialize_to_string", "savedat"), &OeufSerializer::serialize_to_string);
+	godot::ClassDB::bind_method(D_METHOD("deserialize_from_string", "string"), &OeufSerializer::deserialize_from_string);
 	godot::ClassDB::bind_method(D_METHOD("create_cube_mesh"), &OeufSerializer::create_cube_mesh);
 }
 
@@ -175,6 +178,142 @@ struct BufferReader {
 		PackedByteArray s = data.slice(offset, offset + len);
 		offset += len;
 		return s.get_string_from_utf8();
+	}
+};
+
+// Helper for writing human-readable text
+struct TextWriter {
+	String s;
+
+	void put_tag(const String &p_tag) {
+		s += p_tag;
+		s += " ";
+	}
+
+	void put_int(int64_t p_value) {
+		s += String::num_int64(p_value);
+		s += " ";
+	}
+
+	void put_float(double p_value) {
+		s += String::num(p_value);
+		s += " ";
+	}
+
+	void put_string(const String &p_string) {
+		s += "\"";
+		s += p_string.c_escape();
+		s += "\" ";
+	}
+
+	void put_vector3i(const Vector3i &p_vec) {
+		s += String::num_int64(p_vec.x);
+		s += " ";
+		s += String::num_int64(p_vec.y);
+		s += " ";
+		s += String::num_int64(p_vec.z);
+		s += " ";
+	}
+
+	void put_vector3(const Vector3 &p_vec) {
+		s += String::num(p_vec.x);
+		s += " ";
+		s += String::num(p_vec.y);
+		s += " ";
+		s += String::num(p_vec.z);
+		s += " ";
+	}
+
+	void end_line() {
+		if (s.length() > 0 && s[s.length() - 1] == ' ') {
+			s = s.substr(0, s.length() - 1);
+		}
+		s += "\n";
+	}
+
+	String get_string() const {
+		return s;
+	}
+};
+
+// Helper for reading human-readable text
+struct TextReaderTokenized {
+	PackedStringArray lines;
+	int line_idx = 0;
+
+	TextReaderTokenized(const String &p_text) {
+		lines = p_text.split("\n", false);
+	}
+
+	bool has_more_lines() const {
+		return line_idx < lines.size();
+	}
+
+	struct LineTokenizer {
+		String line;
+		int pos = 0;
+
+		LineTokenizer(const String &p_line) : line(p_line) {}
+
+		String next_token() {
+			while (pos < line.length() && line[pos] <= ' ') {
+				pos++;
+			}
+			if (pos >= line.length()) {
+				return "";
+			}
+
+			if (line[pos] == '"') {
+				pos++;
+				int start = pos;
+				while (pos < line.length() && line[pos] != '"') {
+					if (line[pos] == '\\' && pos + 1 < line.length()) {
+						pos++;
+					}
+					pos++;
+				}
+				String s = line.substr(start, pos - start);
+				if (pos < line.length()) {
+					pos++; // skip closing quote
+				}
+				return s.c_unescape();
+			} else {
+				int start = pos;
+				while (pos < line.length() && line[pos] > ' ') {
+					pos++;
+				}
+				return line.substr(start, pos - start);
+			}
+		}
+
+		int64_t next_int() {
+			return next_token().to_int();
+		}
+
+		double next_float() {
+			return next_token().to_float();
+		}
+
+		Vector3i next_vector3i() {
+			int64_t x = next_int();
+			int64_t y = next_int();
+			int64_t z = next_int();
+			return Vector3i(x, y, z);
+		}
+
+		Vector3 next_vector3() {
+			double x = next_float();
+			double y = next_float();
+			double z = next_float();
+			return Vector3(x, y, z);
+		}
+	};
+
+	LineTokenizer next_line() {
+		if (has_more_lines()) {
+			return LineTokenizer(lines[line_idx++]);
+		}
+		return LineTokenizer("");
 	}
 };
 
@@ -461,6 +600,224 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 
 		entities.append(entity);
 	}
+	savedat.append(entities);
+
+	return savedat;
+}
+
+String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
+	if (p_savedat.size() != 5) {
+		ERR_PRINT(vformat("serialize_to_string: Invalid savedat array size (expected 5, got %d)", p_savedat.size()));
+		return "";
+	}
+
+	Dictionary level_state_data = p_savedat[0];
+	Array voxel_data = level_state_data["voxel_data"];
+	Array layers = level_state_data["layers"];
+	Array entities = p_savedat[4];
+
+	TextWriter writer;
+
+	// version
+	writer.put_tag("version");
+	writer.put_int(level_state_data["version"]);
+	writer.end_line();
+
+	// voxel_data
+	int voxel_count = voxel_data.size();
+	writer.put_tag("voxels");
+	writer.put_int(voxel_count);
+	writer.end_line();
+
+	Vector3i last_position = Vector3i(0, 0, 0);
+	for (int i = 0; i < voxel_count; i++) {
+		Array voxel = voxel_data[i];
+		Vector3i v = voxel[0];
+		Vector3i delta = v - last_position;
+		
+		writer.put_tag("vx");
+		if (delta.x >= -128 && delta.x <= 127 && delta.y >= -128 && delta.y <= 127 && delta.z >= -128 && delta.z <= 127) {
+			writer.put_int(0); // type delta
+			writer.put_int(delta.x);
+			writer.put_int(delta.y);
+			writer.put_int(delta.z);
+		} else {
+			writer.put_int(1); // type absolute
+			writer.put_int(v.x);
+			writer.put_int(v.y);
+			writer.put_int(v.z);
+		}
+		last_position = v;
+
+		writer.put_int(voxel[1]); // blocktype
+		writer.put_int(voxel[2]); // tx
+		writer.put_int(voxel[3]); // ty
+		int rot = voxel[4];
+		int vflip = voxel[5] ? 1 : 0;
+		writer.put_int(rot + vflip * 4);
+		writer.put_int(voxel[6]); // extra
+		writer.end_line();
+	}
+
+	// layers
+	int layers_count = layers.size();
+	writer.put_tag("layers");
+	writer.put_int(layers_count);
+	writer.end_line();
+	for (int i = 0; i < layers_count; i++) {
+		Dictionary layer = layers[i];
+		writer.put_tag("l");
+		writer.put_string(layer["name"]);
+		writer.put_int((bool)layer["visible"] ? 1 : 0);
+		writer.end_line();
+	}
+
+	// selected_layer_idx
+	writer.put_tag("selected");
+	writer.put_int(level_state_data["selected_layer_idx"]);
+	writer.end_line();
+
+	// camera
+	writer.put_tag("cp");
+	writer.put_vector3(p_savedat[1]);
+	writer.end_line();
+
+	writer.put_tag("cbr");
+	writer.put_vector3(p_savedat[2]);
+	writer.end_line();
+
+	writer.put_tag("crr");
+	writer.put_vector3(p_savedat[3]);
+	writer.end_line();
+
+	// entities
+	int entities_count = entities.size();
+	writer.put_tag("entities");
+	writer.put_int(entities_count);
+	writer.end_line();
+
+	for (int i = 0; i < entities_count; i++) {
+		Dictionary entity = entities[i];
+		writer.put_tag("e");
+		writer.put_string(entity["name"]);
+		
+		int32_t entity_type = entity["type"];
+		writer.put_int(entity_type);
+		writer.put_vector3i(entity["position"]);
+		
+		uint8_t flags = 0;
+		String meta_str;
+		String asset_name_str;
+		int32_t dir_value = 0;
+		
+		if (entity.has("dir")) {
+			dir_value = entity["dir"];
+			flags |= 0x01;
+		}
+		if (entity.has("meta")) {
+			meta_str = entity["meta"];
+			if (!meta_str.is_empty()) flags |= 0x02;
+		}
+		if (entity.has("asset_name")) {
+			asset_name_str = entity["asset_name"];
+			if (!asset_name_str.is_empty()) flags |= 0x04;
+		}
+		
+		writer.put_int(flags);
+		if (flags & 0x01) writer.put_int(dir_value + 1);
+		if (flags & 0x02) writer.put_string(meta_str);
+		if (flags & 0x04) writer.put_string(asset_name_str);
+
+		if (entity_type == 3) {
+			Vector3i size_EDS = entity.has("size_EDS") ? (Vector3i)entity["size_EDS"] : Vector3i();
+			writer.put_vector3i(size_EDS);
+			Vector3i size_WUN = entity.has("size_WUN") ? (Vector3i)entity["size_WUN"] : Vector3i();
+			writer.put_vector3i(size_WUN);
+		}
+		writer.end_line();
+	}
+
+	return writer.get_string();
+}
+
+Array OeufSerializer::deserialize_from_string(const godot::String &p_string) const {
+	TextReaderTokenized reader(p_string);
+	Array savedat;
+	Dictionary level_state_data;
+	TypedArray<Array> voxel_data;
+	Array layers;
+	TypedArray<Dictionary> entities;
+	
+	Vector3 camera_pos;
+	Vector3 camera_base_rotation;
+	Vector3 camera_rot_rotation;
+	
+	Vector3i last_position = Vector3i(0, 0, 0);
+
+	while (reader.has_more_lines()) {
+		TextReaderTokenized::LineTokenizer t = reader.next_line();
+		String tag = t.next_token();
+		if (tag == "") continue;
+
+		if (tag == "version") {
+			level_state_data[StringName("version")] = t.next_int();
+		} else if (tag == "vx") {
+			Array voxel;
+			int type = t.next_int();
+			if (type == 0) {
+				last_position += t.next_vector3i();
+			} else {
+				last_position = t.next_vector3i();
+			}
+			voxel.append(last_position);
+			voxel.append(t.next_int()); // blocktype
+			voxel.append(t.next_int()); // tx
+			voxel.append(t.next_int()); // ty
+			int rot_vflip = t.next_int();
+			voxel.append(rot_vflip & 3);
+			voxel.append((rot_vflip & 4) != 0);
+			voxel.append(t.next_int()); // extra
+			voxel_data.append(voxel);
+		} else if (tag == "l") {
+			Dictionary layer;
+			layer[StringName("name")] = t.next_token();
+			layer[StringName("visible")] = t.next_int() != 0;
+			layers.append(layer);
+		} else if (tag == "selected") {
+			level_state_data[StringName("selected_layer_idx")] = t.next_int();
+		} else if (tag == "cp") {
+			camera_pos = t.next_vector3();
+		} else if (tag == "cbr") {
+			camera_base_rotation = t.next_vector3();
+		} else if (tag == "crr") {
+			camera_rot_rotation = t.next_vector3();
+		} else if (tag == "e") {
+			Dictionary entity;
+			entity[StringName("name")] = t.next_token();
+			int type = t.next_int();
+			entity[StringName("type")] = type;
+			entity[StringName("position")] = t.next_vector3i();
+			
+			int flags = t.next_int();
+			if (flags & 0x01) entity[StringName("dir")] = t.next_int() - 1;
+			if (flags & 0x02) entity[StringName("meta")] = t.next_token();
+			if (flags & 0x04) entity[StringName("asset_name")] = t.next_token();
+			
+			if (type == 3) {
+				entity[StringName("size_EDS")] = t.next_vector3i();
+				entity[StringName("size_WUN")] = t.next_vector3i();
+			}
+			entities.append(entity);
+		}
+	}
+
+	level_state_data[StringName("voxel_data")] = voxel_data;
+	level_state_data[StringName("layers")] = layers;
+	
+	savedat.append(level_state_data);
+	savedat.append(camera_pos);
+	savedat.append(camera_base_rotation);
+	savedat.append(camera_rot_rotation);
 	savedat.append(entities);
 
 	return savedat;
