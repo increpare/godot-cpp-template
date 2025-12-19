@@ -1,5 +1,8 @@
 #include "example_class.h"
 #include <cstring>
+#include <string>
+#include <cstdio>
+#include <charconv>
 #include "godot_cpp/classes/marshalls.hpp"
 
 void OeufSerializer::_bind_methods() {
@@ -183,56 +186,74 @@ struct BufferReader {
 
 // Helper for writing human-readable text
 struct TextWriter {
-	String s;
+	std::string s;
+	bool first_in_line = true;
+
+	void reserve(size_t p_size) {
+		s.reserve(p_size);
+	}
+
+	void _put_space() {
+		if (!first_in_line) {
+			s += ' ';
+		}
+		first_in_line = false;
+	}
+
+	void put_tag(const char *p_tag) {
+		_put_space();
+		s += p_tag;
+	}
 
 	void put_tag(const String &p_tag) {
-		s += p_tag;
-		s += " ";
+		_put_space();
+		s += p_tag.utf8().get_data();
 	}
 
 	void put_int(int64_t p_value) {
-		s += String::num_int64(p_value);
-		s += " ";
+		_put_space();
+		if (p_value >= 0 && p_value < 10) {
+			s += (char)('0' + p_value);
+		} else {
+			char buf[24];
+			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), p_value);
+			s.append(buf, ptr - buf);
+		}
 	}
 
 	void put_float(double p_value) {
-		s += String::num(p_value);
-		s += " ";
+		_put_space();
+		char buf[32];
+		int len = snprintf(buf, sizeof(buf), "%g", p_value);
+		s.append(buf, len);
 	}
 
 	void put_string(const String &p_string) {
-		s += "\"";
-		s += p_string.c_escape();
-		s += "\" ";
+		_put_space();
+		s += '"';
+		s += p_string.c_escape().utf8().get_data();
+		s += '"';
 	}
 
 	void put_vector3i(const Vector3i &p_vec) {
-		s += String::num_int64(p_vec.x);
-		s += " ";
-		s += String::num_int64(p_vec.y);
-		s += " ";
-		s += String::num_int64(p_vec.z);
-		s += " ";
+		put_int(p_vec.x);
+		put_int(p_vec.y);
+		put_int(p_vec.z);
 	}
 
 	void put_vector3(const Vector3 &p_vec) {
-		s += String::num(p_vec.x);
-		s += " ";
-		s += String::num(p_vec.y);
-		s += " ";
-		s += String::num(p_vec.z);
-		s += " ";
+		put_float(p_vec.x);
+		put_float(p_vec.y);
+		put_float(p_vec.z);
 	}
 
 	void end_line() {
-		if (s.length() > 0 && s[s.length() - 1] == ' ') {
-			s = s.substr(0, s.length() - 1);
-		}
-		s += "\n";
+		s += '\n';
+		first_in_line = true;
 	}
 
 	String get_string() const {
-		return s;
+		return String(s.c_str());
 	}
 };
 
@@ -618,13 +639,20 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 
 	TextWriter writer;
 
+	int voxel_count = voxel_data.size();
+	int entities_count = entities.size();
+	int layers_count = layers.size();
+
+	// Rough estimate: ~40 bytes per voxel, ~100 per entity, plus overhead
+	size_t estimated_size = 1024 + (voxel_count * 40) + (entities_count * 100);
+	writer.reserve(estimated_size);
+
 	// version
 	writer.put_tag("version");
 	writer.put_int(level_state_data["version"]);
 	writer.end_line();
 
 	// voxel_data
-	int voxel_count = voxel_data.size();
 	writer.put_tag("voxels");
 	writer.put_int(voxel_count);
 	writer.end_line();
@@ -653,14 +681,13 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		writer.put_int(voxel[2]); // tx
 		writer.put_int(voxel[3]); // ty
 		int rot = voxel[4];
-		int vflip = voxel[5] ? 1 : 0;
+		int vflip = (bool)voxel[5] ? 1 : 0;
 		writer.put_int(rot + vflip * 4);
 		writer.put_int(voxel[6]); // extra
 		writer.end_line();
 	}
 
 	// layers
-	int layers_count = layers.size();
 	writer.put_tag("layers");
 	writer.put_int(layers_count);
 	writer.end_line();
@@ -691,7 +718,6 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	writer.end_line();
 
 	// entities
-	int entities_count = entities.size();
 	writer.put_tag("entities");
 	writer.put_int(entities_count);
 	writer.end_line();
