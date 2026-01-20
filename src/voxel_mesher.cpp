@@ -20,7 +20,22 @@ enum FaceOccupancy {
 	OCCUPANCY_TRI3 = 3,
 	OCCUPANCY_QUAD = 4,
 	OCCUPANCY_OCTAGON = 5,
-	OCCUPANCY_SLIM = 6
+	OCCUPANCY_SLIM = 6,
+	// Shallow ramp end pieces - rectangles at different heights
+	OCCUPANCY_SHALLOW_END_LOW = 7,
+	OCCUPANCY_SHALLOW_END_MED = 8,
+	OCCUPANCY_SHALLOW_END_HIGH = 9,
+	// Shallow ramp side pieces - trapezoids encoded by SLOPE DIRECTION
+	// Two sides cull only if same height AND same slope direction (same value)
+	OCCUPANCY_SHALLOW_SIDE_LOW_N = 10,  // LOW trapezoid, slopes toward N
+	OCCUPANCY_SHALLOW_SIDE_LOW_S = 11,  // LOW trapezoid, slopes toward S
+	OCCUPANCY_SHALLOW_SIDE_LOW_E = 12,  // LOW trapezoid, slopes toward E
+	OCCUPANCY_SHALLOW_SIDE_LOW_W = 13,  // LOW trapezoid, slopes toward W
+	OCCUPANCY_SHALLOW_SIDE_HIGH_N = 14, // HIGH trapezoid, slopes toward N
+	OCCUPANCY_SHALLOW_SIDE_HIGH_S = 15, // HIGH trapezoid, slopes toward S
+	OCCUPANCY_SHALLOW_SIDE_HIGH_E = 16, // HIGH trapezoid, slopes toward E
+	OCCUPANCY_SHALLOW_SIDE_HIGH_W = 17, // HIGH trapezoid, slopes toward W
+	OCCUPANCY_MAX = 18  // For array sizing
 };
 
 // Ported from Shapes.gd - optimized with early returns
@@ -203,10 +218,10 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 	}
 	
 	// Pre-compute occupancy_fits lookup table - eliminates function call overhead
-	// Map occupancy values (-1 to 6) to indices (0 to 7) by adding 1
+	// Map occupancy values (-1 to 17) to indices (0 to 18) by adding 1
 	// occupancy_fits_table[subject+1][container+1] = true if subject fits in container
-	for (int subject = -1; subject <= 6; subject++) {
-		for (int container = -1; container <= 6; container++) {
+	for (int subject = -1; subject <= 17; subject++) {
+		for (int container = -1; container <= 17; container++) {
 			int sub_idx = subject + 1;
 			int cont_idx = container + 1;
 			
@@ -220,10 +235,13 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 			} else if (container == OCCUPANCY_QUAD) {
 				fits = (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
 			} else {
-				fits = false;
+				// For all other occupancies (including shallow ramp sides):
+				// Same value = same geometry = can cull
+				// Different values = different geometry = cannot cull
+				fits = (subject == container);
 			}
 			
-			occupancy_fits_table[sub_idx * 8 + cont_idx] = fits;
+			occupancy_fits_table[sub_idx * 19 + cont_idx] = fits;
 		}
 	}
 }
@@ -506,7 +524,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 						// Direct lookup table access - eliminates function call overhead!
 						const int sub_idx = face.face_occupancy + 1;
 						const int cont_idx = neigh_occupancy + 1;
-						if (occupancy_fits_table[sub_idx * 8 + cont_idx]) {
+						if (occupancy_fits_table[sub_idx * 19 + cont_idx]) {
 							continue; // Skip this face
 						}
 					}

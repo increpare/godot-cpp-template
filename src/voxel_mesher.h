@@ -47,11 +47,11 @@ private:
 	// 256 shape variants × 6 faces = 1536 bytes - flattened for better cache locality
 	int8_t face_occupancy_cache[256 * 6];
 
-	// Pre-computed occupancy_fits lookup table: flattened array [subject * 8 + container] -> bool
-	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6
-	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 6->7
-	// 8×8 = 64 bytes - flattened for better cache locality
-	bool occupancy_fits_table[8 * 8];
+	// Pre-computed occupancy_fits lookup table: flattened array [subject * 15 + container] -> bool
+	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6, SHALLOW_END_*=7-9, SHALLOW_SIDE_*=10-17
+	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 17->18
+	// 19×19 = 361 bytes - flattened for better cache locality
+	bool occupancy_fits_table[19 * 19];
 
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;
