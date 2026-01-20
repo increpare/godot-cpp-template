@@ -405,10 +405,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	std::fill(grid_cache.begin(), grid_cache.end(), -1);
 	
 	const Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
-	
-	// DEBUG: Print chunk info
-	UtilityFunctions::print("=== CHUNK: coord=(", chunk_coord.x, ",", chunk_coord.y, ",", chunk_coord.z,
-		") offset=(", offset.x, ",", offset.y, ",", offset.z, ") size=(", size_x, ",", size_y, ",", size_z, ") ===");
 	const int stride_y = size_x;
 	const int stride_z = size_x * size_y;
 
@@ -505,14 +501,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			const FaceData &face = shape_data.faces[face_idx];
 			const size_t indices_size = face.indices.size();
 			if (indices_size == 0) continue;
-
-			// DEBUG: Check specific problematic voxels
-			if ((cache_entry.voxel_pos.x == 0 && cache_entry.voxel_pos.z <= 1) || face.face_occupancy >= 7) {
-				const char* dir_names[] = {"S", "N", "W", "E", "U", "D"};
-				UtilityFunctions::print("FACE: world(", cache_entry.voxel_pos.x, ",", cache_entry.voxel_pos.y, ",", cache_entry.voxel_pos.z,
-					") local(", cache_entry.local_x, ",", cache_entry.local_y, ",", cache_entry.local_z,
-					") face=", dir_names[face_idx], " occ=", face.face_occupancy, " occupy_face=", face.occupy_face ? "true" : "false");
-			}
 
 			// Neighbor check - optimized with early exits and cached shape access
 			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {

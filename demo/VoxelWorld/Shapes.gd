@@ -1243,7 +1243,7 @@ func _ready() -> void:
 	generate_projected_uvs(pipe_dat)
 	generateUVPatterns()
 	generateShapeDats()
-	test_shallow_ramp_occupancies()
+	#test_shallow_ramp_occupancies()  # Commented out - tests passed
 	
 
 # ============ SHALLOW RAMP OCCUPANCY DEBUG/TEST ============
