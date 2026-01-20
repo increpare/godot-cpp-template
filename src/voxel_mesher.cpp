@@ -405,6 +405,10 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	std::fill(grid_cache.begin(), grid_cache.end(), -1);
 	
 	const Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
+	
+	// DEBUG: Print chunk info
+	UtilityFunctions::print("=== CHUNK: coord=(", chunk_coord.x, ",", chunk_coord.y, ",", chunk_coord.z,
+		") offset=(", offset.x, ",", offset.y, ",", offset.z, ") size=(", size_x, ",", size_y, ",", size_z, ") ===");
 	const int stride_y = size_x;
 	const int stride_z = size_x * size_y;
 
@@ -502,32 +506,82 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			const size_t indices_size = face.indices.size();
 			if (indices_size == 0) continue;
 
+			// DEBUG: Check specific problematic voxels
+			if ((cache_entry.voxel_pos.x == 0 && cache_entry.voxel_pos.z <= 1) || face.face_occupancy >= 7) {
+				const char* dir_names[] = {"S", "N", "W", "E", "U", "D"};
+				UtilityFunctions::print("FACE: world(", cache_entry.voxel_pos.x, ",", cache_entry.voxel_pos.y, ",", cache_entry.voxel_pos.z,
+					") local(", cache_entry.local_x, ",", cache_entry.local_y, ",", cache_entry.local_z,
+					") face=", dir_names[face_idx], " occ=", face.face_occupancy, " occupy_face=", face.occupy_face ? "true" : "false");
+			}
+
 			// Neighbor check - optimized with early exits and cached shape access
 			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {
 				const Vector3i &dir_offset = DIR_OFFSETS[face_idx];
 				const int nlx = cache_entry.local_x + dir_offset.x;
 				const int nly = cache_entry.local_y + dir_offset.y;
 				const int nlz = cache_entry.local_z + dir_offset.z;
+				
+				bool should_cull = false;
 
 				// Fast bounds check
 				if ((unsigned)nlx < (unsigned)size_x && 
 				    (unsigned)nly < (unsigned)size_y && 
 				    (unsigned)nlz < (unsigned)size_z) {
 					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
+					
 					if (n_idx != -1 && voxel_cache[n_idx].valid) {
 						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
-						
-						// Direct access to cached face occupancy - no shape->faces[dir] indirection!
 						const int opp_dir = OPPOSITE_DIR[face_idx];
 						const int neigh_occupancy = face_occupancy_cache[n_cache.lookup_key * 6 + opp_dir];
-						
-						// Direct lookup table access - eliminates function call overhead!
 						const int sub_idx = face.face_occupancy + 1;
 						const int cont_idx = neigh_occupancy + 1;
+						
 						if (occupancy_fits_table[sub_idx * 19 + cont_idx]) {
-							continue; // Skip this face
+							should_cull = true;
 						}
 					}
+				}
+				
+				// For shallow ramp END faces, also check diagonal neighbors (different Y level)
+				// SHALLOW_END_HIGH at y can match SHALLOW_END_LOW at y+1
+				// SHALLOW_END_LOW at y can match SHALLOW_END_HIGH at y-1
+				if (!should_cull && face_idx < 4) { // Only for horizontal faces (S/N/W/E)
+					int y_offset = 0;
+					int matching_occ = -1;
+					
+					if (face.face_occupancy == OCCUPANCY_SHALLOW_END_HIGH) {
+						y_offset = 1;  // Check tile above
+						matching_occ = OCCUPANCY_SHALLOW_END_LOW;
+					} else if (face.face_occupancy == OCCUPANCY_SHALLOW_END_LOW) {
+						y_offset = -1; // Check tile below
+						matching_occ = OCCUPANCY_SHALLOW_END_HIGH;
+					}
+					
+					if (y_offset != 0) {
+						const int diag_x = nlx;
+						const int diag_y = cache_entry.local_y + y_offset;
+						const int diag_z = nlz;
+						
+						if ((unsigned)diag_x < (unsigned)size_x && 
+						    (unsigned)diag_y < (unsigned)size_y && 
+						    (unsigned)diag_z < (unsigned)size_z) {
+							const int diag_idx = grid_cache[diag_x + diag_y * stride_y + diag_z * stride_z];
+							
+							if (diag_idx != -1 && voxel_cache[diag_idx].valid) {
+								const CachedVoxelInfo &diag_cache = voxel_cache[diag_idx];
+								const int opp_dir = OPPOSITE_DIR[face_idx];
+								const int diag_occupancy = face_occupancy_cache[diag_cache.lookup_key * 6 + opp_dir];
+								
+								if (diag_occupancy == matching_occ) {
+									should_cull = true;
+								}
+							}
+						}
+					}
+				}
+				
+				if (should_cull) {
+					continue; // Skip this face
 				}
 			}
 

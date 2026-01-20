@@ -1394,6 +1394,34 @@ func test_shallow_ramp_occupancies():
 		SHALLOW_RAMP_LOW, 0, true, 3,
 		SHALLOW_RAMP_LOW, 2, true, 2)
 	
+	print("\n--- END CAP TESTS (N/S adjacency at z=0 and z=1) ---")
+	# For tiles at z=0 and z=1: z=0's N-face touches z=1's S-face
+	
+	# Continuous slope: LOW followed by HIGH (should cull - both MED height)
+	test_adjacency("END CAP: LOW(z=0) N vs HIGH(z=1) S (MED meets MED, should cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,   # N face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_HIGH, 0, false, 0)  # S face = SHALLOW_END_MED (8)
+	
+	# Two LOWs in a row (step - should NOT cull, different heights)
+	test_adjacency("END CAP: LOW(z=0) N vs LOW(z=1) S (MED meets LOW, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,   # N face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_LOW, 0, false, 0)   # S face = SHALLOW_END_LOW (7)
+	
+	# Two HIGHs in a row (step - should NOT cull)
+	test_adjacency("END CAP: HIGH(z=0) N vs HIGH(z=1) S (HIGH meets MED, should NOT cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 1,  # N face = SHALLOW_END_HIGH (9)
+		SHALLOW_RAMP_HIGH, 0, false, 0)  # S face = SHALLOW_END_MED (8)
+	
+	# HIGH followed by LOW (big step - should NOT cull)
+	test_adjacency("END CAP: HIGH(z=0) N vs LOW(z=1) S (HIGH meets LOW, should NOT cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 1,  # N face = SHALLOW_END_HIGH (9)
+		SHALLOW_RAMP_LOW, 0, false, 0)   # S face = SHALLOW_END_LOW (7)
+	
+	# Rotated: rot=1 uses W/E as ends
+	test_adjacency("END CAP ROT1: LOW(x=0) E vs HIGH(x=1) W (MED meets MED, should cull)", 
+		SHALLOW_RAMP_LOW, 1, false, 3,   # E face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_HIGH, 1, false, 2)  # W face = SHALLOW_END_MED (8)
+	
 	print("\n========== END TEST ==========\n")
 
 func test_adjacency(desc: String, shape1: int, rot1: int, vflip1: bool, face1: int, 
