@@ -629,8 +629,8 @@ var shallow_ramp_low_dat = {
 		[
 			"square_shallow",
 			"square_shallow",
-			"shallow_side_low",
-			"shallow_side_low_f",
+			"square_shallow",
+			"square_shallow",
 			"square",
 			"square"
 		],
@@ -680,8 +680,8 @@ var shallow_ramp_high_dat = {
 		[
 			"square_shallow",
 			"square_shallow",
-			"shallow_side_high",
-			"shallow_side_high_f",
+			"square_shallow",
+			"square_shallow",
 			"square",
 			"square"
 		],
@@ -748,48 +748,7 @@ var uvpatterns = {
 		du
 
 	],
-	# Shallow ramp side pieces - trapezoids
-	# Low side: S edge height=0.25 (from -0.75 to -0.5), N edge height=0.25 (from -0.25 to 0)
-	# The trapezoid vertices go: bottom-S, top-S, top-N, bottom-N (quad as 2 tris)
-	"shallow_side_low": [
-		# tri 1: 0,4,6 -> bottom-S, bottom-N, top-N
-		dv*0.75,                    # bottom-S (y=0.75 from bottom)
-		dv*0.25,                    # bottom-N (y=0.25 from bottom) 
-		du+Vector2(0,0),            # top-N (y=0)
-		# tri 2: 0,6,2 -> bottom-S, top-N, top-S
-		dv*0.75,                    # bottom-S
-		du+Vector2(0,0),            # top-N
-		du+dv*0.5,                  # top-S (y=0.5 from bottom)
-	],
-	"shallow_side_low_f": [
-		# flipped version for E face
-		du+dv*0.75,
-		du+dv*0.25,
-		Vector2(0,0),
-		du+dv*0.75,
-		Vector2(0,0),
-		dv*0.5,
-	],
-	# High side: S edge height=0.25 (from -0.25 to 0), N edge height=0.25 (from 0.25 to 0.5)
-	"shallow_side_high": [
-		# tri 1: 0,4,6 -> bottom-S, bottom-N, top-N
-		dv*0.25,                    # bottom-S (y=0.25 from bottom)
-		Vector2(0,0),               # bottom-N (y=0, at top edge)
-		du+dv*0.5,                  # top-N (y=0.5, but inverted so from top)
-		# tri 2: 0,6,2 -> bottom-S, top-N, top-S
-		dv*0.25,                    # bottom-S
-		du+dv*0.5,                  # top-N
-		du+dv*1.0,                  # top-S (y=1.0, but this is outside... let me use dv)
-	],
-	"shallow_side_high_f": [
-		# flipped version for E face
-		du+dv*0.25,
-		du+Vector2(0,0),
-		dv*0.5,
-		du+dv*0.25,
-		dv*0.5,
-		dv*1.0,
-	],
+	
 	"triangle": [dv,Vector2(0,0),du],
 	"triangle_f": [du,Vector2(0,0),dv],
 	
@@ -824,8 +783,6 @@ var flippable_uvs = [
 	["dtriangle_corner","dtriangle_corner_vflipped"],
 	["dtriangle_corner_f","dtriangle_corner_f_vflipped"],
 	["triangle_corner_top","triangle_corner_top_vflipped"],
-	["shallow_side_low","shallow_side_high"],
-	["shallow_side_low_f","shallow_side_high_f"],
 ]
 
 func generateShapeDats():
