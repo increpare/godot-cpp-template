@@ -84,7 +84,9 @@ func _ready() -> void:
 	if deserialized_data.size() == 5:
 		print("Level version: ", deserialized_data[0]["version"])
 		print("Camera pos: ", deserialized_data[1])
-		print("Entities count: ", deserialized_data[4].size())
+		var entities_slot = deserialized_data[4]
+		var entities_arr = entities_slot.entities if entities_slot is Dictionary else entities_slot
+		print("Entities count: ", entities_arr.size())
 
 	var re_stringified:String = var_to_str(deserialized_data)
 	var all_same = re_stringified == test_file

@@ -347,9 +347,20 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	// 0: level_state_data
 	Dictionary level_state_data = p_savedat[0];
 	
+	// 4: entities - support both legacy (array) and versioned (dict with "version" + "entities")
+	Variant entities_slot = p_savedat[4];
+	int entities_version = 0;
+	Array entities;
+	if (entities_slot.get_type() == Variant::DICTIONARY) {
+		Dictionary d = entities_slot;
+		entities_version = d["version"];
+		entities = d["entities"];
+	} else {
+		entities = entities_slot;
+	}
+	
 	// Estimate buffer size: version (1) + voxel_count (4) + entities_count (2) + rough estimates
 	Array voxel_data = level_state_data["voxel_data"];
-	Array entities = p_savedat[4];
 	int voxel_count = voxel_data.size();
 	int entities_count = entities.size();
 	
@@ -424,7 +435,9 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 	writer.put_float(camera_rot_rotation.y);
 	writer.put_float(camera_rot_rotation.z);
 
-	// 4: entities
+	// 4: entities (version byte, then count)
+	// Note: entities_version byte was added in this format; old binary files are not compatible.
+	writer.put_8(entities_version);
 	writer.put_16(entities_count);
 	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity = entities[i];
@@ -571,9 +584,10 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 	camera_rot_rotation.z = reader.get_float();
 	savedat.append(camera_rot_rotation);
 	
-	// 4: entities
-	TypedArray<Dictionary> entities;
+	// 4: entities (version byte, then count)
+	int entities_version = reader.get_8();
 	int entities_count = reader.get_16();
+	TypedArray<Dictionary> entities;
 	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity;
 		entity[StringName("name")] = reader.get_utf8_string();
@@ -621,7 +635,10 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 
 		entities.append(entity);
 	}
-	savedat.append(entities);
+	Dictionary entities_dict;
+	entities_dict[StringName("version")] = entities_version;
+	entities_dict[StringName("entities")] = entities;
+	savedat.append(entities_dict);
 
 	return savedat;
 }
@@ -635,7 +652,17 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	Dictionary level_state_data = p_savedat[0];
 	Array voxel_data = level_state_data["voxel_data"];
 	Array layers = level_state_data["layers"];
-	Array entities = p_savedat[4];
+	// entities - support both legacy (array) and versioned (dict with "version" + "entities")
+	Variant entities_slot = p_savedat[4];
+	int entities_version = 0;
+	Array entities;
+	if (entities_slot.get_type() == Variant::DICTIONARY) {
+		Dictionary d = entities_slot;
+		entities_version = d["version"];
+		entities = d["entities"];
+	} else {
+		entities = entities_slot;
+	}
 
 	TextWriter writer;
 
@@ -717,7 +744,10 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	writer.put_vector3(p_savedat[3]);
 	writer.end_line();
 
-	// entities
+	// entities (version, then count)
+	writer.put_tag("entities_version");
+	writer.put_int(entities_version);
+	writer.end_line();
 	writer.put_tag("entities");
 	writer.put_int(entities_count);
 	writer.end_line();
@@ -773,6 +803,7 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 	TypedArray<Array> voxel_data;
 	Array layers;
 	TypedArray<Dictionary> entities;
+	int entities_version = 0;
 	
 	Vector3 camera_pos;
 	Vector3 camera_base_rotation;
@@ -787,6 +818,10 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 
 		if (tag == "version") {
 			level_state_data[StringName("version")] = t.next_int();
+		} else if (tag == "entities_ver") {
+			entities_version = t.next_int();
+		} else if (tag == "entities") {
+			t.next_int(); // consume count (entities are parsed from "e" tags)
 		} else if (tag == "vx") {
 			Array voxel;
 			int type = t.next_int();
@@ -840,11 +875,15 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 	level_state_data[StringName("voxel_data")] = voxel_data;
 	level_state_data[StringName("layers")] = layers;
 	
+	Dictionary entities_dict;
+	entities_dict[StringName("version")] = entities_version;
+	entities_dict[StringName("entities")] = entities;
+	
 	savedat.append(level_state_data);
 	savedat.append(camera_pos);
 	savedat.append(camera_base_rotation);
 	savedat.append(camera_rot_rotation);
-	savedat.append(entities);
+	savedat.append(entities_dict);
 
 	return savedat;
 }
