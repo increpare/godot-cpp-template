@@ -818,7 +818,7 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 
 		if (tag == "version") {
 			level_state_data[StringName("version")] = t.next_int();
-		} else if (tag == "entities_ver") {
+		} else if (tag == "entities_version") {
 			entities_version = t.next_int();
 		} else if (tag == "entities") {
 			t.next_int(); // consume count (entities are parsed from "e" tags)
