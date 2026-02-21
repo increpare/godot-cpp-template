@@ -28,6 +28,11 @@ Help(opts.GenerateHelpText(localEnv))
 
 env = localEnv.Clone()
 
+# Use MD5 decider so incremental builds work properly. Without this, SCons uses
+# timestamps, and regenerated files (e.g. ext_wrappers.gen.inc) get new
+# timestamps every run, forcing a full godot-cpp rebuild each time.
+Decider("MD5")
+
 if not (os.path.isdir("godot-cpp") and os.listdir("godot-cpp")):
     print_error("""godot-cpp is not available within this folder, as Git submodules haven't been initialized.
 Run the following command to download godot-cpp:

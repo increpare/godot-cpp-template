@@ -447,10 +447,13 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 		writer.put_8(entity_type);
 
 		// Handle position type (Vector3 vs Vector3i)
-		Vector3i pos = entity["position"];
+		Vector3i pos = entity["position"];		
 		writer.put_16(pos.x);
 		writer.put_16(pos.y);
 		writer.put_16(pos.z);
+
+		uint8_t layer = entity.has("layer") ? (uint8_t)(int)entity["layer"] : 0;
+		writer.put_8(layer);
 		
 		// Calculate flags for optional fields first to save space
 		uint8_t flags = 0;
@@ -599,6 +602,12 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 		pos.y = reader.get_16();
 		pos.z = reader.get_16();
 		entity[StringName("position")] = pos;
+		
+		if (entities_version >= 3){
+			entity[StringName("layer")] = reader.get_8();
+		} else {
+			entity[StringName("layer")] = 0;
+		}
 		
 		// Read flags byte for optional fields
 		uint8_t flags = reader.get_8();
@@ -760,6 +769,8 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		int32_t entity_type = entity["type"];
 		writer.put_int(entity_type);
 		writer.put_vector3i(entity["position"]);
+
+		writer.put_int(entity["layer"]);
 		
 		uint8_t flags = 0;
 		String meta_str;
@@ -858,6 +869,13 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 			int type = t.next_int();
 			entity[StringName("type")] = type;
 			entity[StringName("position")] = t.next_vector3i();
+			
+			if (entities_version >= 3){
+				//entities have a layer
+				entity[StringName("layer")] = t.next_int();
+			} else {
+				entity[StringName("layer")] = 0;
+			}
 			
 			int flags = t.next_int();
 			if (flags & 0x01) entity[StringName("dir")] = t.next_int() - 1;
