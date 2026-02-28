@@ -11,6 +11,7 @@
 #include "godot_cpp/variant/packed_int32_array.hpp"
 #include "godot_cpp/variant/vector3i.hpp"
 #include "godot_cpp/variant/vector3.hpp"
+#include "godot_cpp/variant/string.hpp"
 
 using namespace godot;
 
@@ -29,5 +30,9 @@ public:
 	PackedByteArray serialize_array(const TypedArray<Vector3i> &p_array) const;
 	PackedByteArray serialize_game_data(const Array &p_savedat) const;
 	Array deserialize_game_data(const PackedByteArray &p_buffer) const;
+	//also functions to serialize to/from String
+	String serialize_to_string(const Array &p_savedat) const;
+	Array deserialize_from_string(const godot::String &p_string) const;
+
 	Ref<Mesh> create_cube_mesh() const;
 };

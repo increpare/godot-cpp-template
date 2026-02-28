@@ -17,6 +17,8 @@ var entity_icon_materials:Array[StandardMaterial3D]=[
 var entities:Array[Dictionary] = []
 var associated_objects:Array[MeshInstance3D] = []
 
+const ENTITIES_SAVE_VERSION:int = 1
+
 const margin:float=0.05
 
 # array of pairs, where first element is timestamp
@@ -74,13 +76,21 @@ func last_undo_time()->int:
 	return undo_history[undo_history.size()-1][0]
 	
 func restore_from_data(data:Variant):
-	clear_all();
-	var new_entities = data
-	for new_entity:Dictionary in new_entities:
-		add_entity_from_dict(new_entity,false)
-	
+	clear_all()
+	# Support both legacy (array) and versioned (dict with entities key) format
+	var entities_array:Array
+	if data is Array:
+		entities_array = data
+	else:
+		entities_array = data.entities
+	for new_entity:Dictionary in entities_array:
+		add_entity_from_dict(new_entity, false)
+
 func save_to_data()->Variant:
-	return entities
+	return {
+		version = ENTITIES_SAVE_VERSION,
+		entities = entities,
+	}
 	
 func clear_all():
 	clear_undo_history()

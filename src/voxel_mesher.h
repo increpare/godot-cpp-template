@@ -10,6 +10,8 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <cstdint>
 
 namespace godot {
 
@@ -31,8 +33,25 @@ private:
 		// Pre-calculated wobbled vertices could be cached per voxel, not per shape
 	};
 
-	// database[shape_index][rotation][vflip]
-	std::vector<std::vector<std::vector<ShapeVariant>>> shape_database;
+	// Flattened array: key = shape_type | (rotation << 4) | (vflip << 6)
+	// Encodes all combinations in a single byte: shape_type (0-12, 4 bits), rotation (0-3, 2 bits), vflip (0-1, 1 bit)
+	// 256 possible combinations - direct array access with zero hash overhead!
+	ShapeVariant shape_database[256];
+	bool shape_lookup_valid[256]; // Track which entries are valid
+	
+	// Direct array lookup: points to shape_database entries
+	const ShapeVariant* shape_lookup_array[256];
+	
+	// Pre-computed face occupancies: flattened array [key * 6 + face_dir] = occupancy value
+	// Eliminates repeated shape->faces[dir]->face_occupancy indirection in neighbor checks
+	// 256 shape variants × 6 faces = 1536 bytes - flattened for better cache locality
+	int8_t face_occupancy_cache[256 * 6];
+
+	// Pre-computed occupancy_fits lookup table: flattened array [subject * 15 + container] -> bool
+	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6, SHALLOW_END_*=7-9, SHALLOW_SIDE_*=10-17
+	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 17->18
+	// 19×19 = 361 bytes - flattened for better cache locality
+	bool occupancy_fits_table[19 * 19];
 
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;
@@ -40,6 +59,46 @@ private:
 	Ref<FastNoiseLite> noise1;
 	Ref<FastNoiseLite> noise2;
 	Ref<FastNoiseLite> noise3;
+	
+	// Cached noise pointers - set once, reused across all chunks (195 calls!)
+	// Eliminates repeated .ptr() calls in hot path
+	FastNoiseLite *cached_noise1;
+	FastNoiseLite *cached_noise2;
+	FastNoiseLite *cached_noise3;
+	
+	// Reusable buffers - pre-allocated and cleared between calls to avoid allocations
+	// Since size_x/y/z are constant, we can reuse these across all 190 calls
+	std::vector<Vector3> final_vertices;
+	std::vector<Vector3> final_normals;
+	std::vector<Color> final_normals_smoothed;
+	std::vector<Vector2> final_uvs;
+	
+	struct VoxelData {
+		int16_t shape_type;
+		int16_t tx, ty;
+		int8_t rot;
+		bool vflip;
+		int8_t layer;
+	} __attribute__((packed));
+	
+	struct CachedVoxelInfo {
+		const ShapeVariant *shape_ptr;
+		uint8_t lookup_key;
+		Vector3i voxel_pos;
+		int local_x, local_y, local_z;
+		bool valid;
+	};
+	
+	std::vector<VoxelData> unpacked_props;
+	std::vector<Vector3i> unpacked_voxels;
+	std::vector<bool> layers_vis;
+	std::vector<int> grid_cache;
+	std::vector<CachedVoxelInfo> voxel_cache;
+	std::vector<Vector3> cached_wobbled_local_verts;
+	std::vector<Color> cached_vertex_colors;
+	
+	// Track current chunk dimensions to resize grid_cache only when needed
+	int cached_size_x, cached_size_y, cached_size_z;
 	
 	// Constants
 	const float TILE_W = 16.0f;

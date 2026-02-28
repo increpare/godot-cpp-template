@@ -75,3 +75,11 @@ all: windows64 macos linux64-docker deploy
 # Build for windows64 and macos only (skip Linux - no Docker needed)
 all-no-linux: windows64 macos deploy
 
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -rf bin/*
+	@find src -name "*.os" -type f -delete
+	@rm -rf src/gen/*.os src/gen/*.cpp 2>/dev/null || true
+	@echo "Clean complete!"

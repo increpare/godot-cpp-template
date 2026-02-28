@@ -645,12 +645,12 @@ var shallow_ramp_low_dat = {
 		],
 	occupyface =
 		[
-			false, 	#S
-			false,	#N
-			false,	#W
-			false,	#E
-			false,	#U
-			false,	#D
+			true, 	#S - can cull against neighbor
+			true,	#N - can cull against neighbor
+			true,	#W - can cull against neighbor
+			true,	#E - can cull against neighbor
+			false,	#U - sloped, don't cull
+			false,	#D - sloped, don't cull
 		]
 }
 
@@ -696,12 +696,12 @@ var shallow_ramp_high_dat = {
 		],
 	occupyface =
 		[
-			false, 	#S
-			false,	#N
-			false,	#W
-			false,	#E
-			false,	#U
-			false,	#D
+			true, 	#S - can cull against neighbor
+			true,	#N - can cull against neighbor
+			true,	#W - can cull against neighbor
+			true,	#E - can cull against neighbor
+			false,	#U - sloped, don't cull
+			false,	#D - sloped, don't cull
 		]
 }
 
@@ -748,6 +748,7 @@ var uvpatterns = {
 		du
 
 	],
+	
 	"triangle": [dv,Vector2(0,0),du],
 	"triangle_f": [du,Vector2(0,0),dv],
 	
@@ -781,7 +782,7 @@ var flippable_uvs = [
 	["square","square_f"],
 	["dtriangle_corner","dtriangle_corner_vflipped"],
 	["dtriangle_corner_f","dtriangle_corner_f_vflipped"],
-	["triangle_corner_top","triangle_corner_top_vflipped"]
+	["triangle_corner_top","triangle_corner_top_vflipped"],
 ]
 
 func generateShapeDats():
@@ -923,6 +924,20 @@ enum FaceOccupancy {
 	QUAD=4,
 	OCTAGON=5,
 	SLIM=6,#for wall slim sides - not for top and bottom
+	# Shallow ramp end pieces - rectangles at different heights
+	SHALLOW_END_LOW=7,   # Low end (y = -0.75 to -0.5)
+	SHALLOW_END_MED=8,   # Medium end (y = -0.25 to 0)
+	SHALLOW_END_HIGH=9,  # High end (y = 0.25 to 0.5)
+	# Shallow ramp side pieces - trapezoids encoded by SLOPE DIRECTION (world-space)
+	# Two sides cull only if same height AND same slope direction
+	SHALLOW_SIDE_LOW_N=10,  # LOW trapezoid, ramp slopes toward +Z (north)
+	SHALLOW_SIDE_LOW_S=11,  # LOW trapezoid, ramp slopes toward -Z (south)
+	SHALLOW_SIDE_LOW_E=12,  # LOW trapezoid, ramp slopes toward -X (east)
+	SHALLOW_SIDE_LOW_W=13,  # LOW trapezoid, ramp slopes toward +X (west)
+	SHALLOW_SIDE_HIGH_N=14, # HIGH trapezoid, ramp slopes toward +Z (north)
+	SHALLOW_SIDE_HIGH_S=15, # HIGH trapezoid, ramp slopes toward -Z (south)
+	SHALLOW_SIDE_HIGH_E=16, # HIGH trapezoid, ramp slopes toward -X (east)
+	SHALLOW_SIDE_HIGH_W=17, # HIGH trapezoid, ramp slopes toward +X (west)
 }
 
 func occupancy_fits(subject: FaceOccupancy, container: FaceOccupancy) -> bool:
@@ -1020,21 +1035,21 @@ const BLOCK_OCCUPANCIES : Dictionary = {
 		FaceOccupancy.EMPTY, #U
 		FaceOccupancy.QUAD, #D
 	],
-	10: [ # SHALLOW_RAMP_LOW
-		FaceOccupancy.EMPTY, #S
-		FaceOccupancy.EMPTY, #N
-		FaceOccupancy.EMPTY, #W
-		FaceOccupancy.EMPTY, #E
-		FaceOccupancy.EMPTY, #U
-		FaceOccupancy.EMPTY, #D
+	10: [ # SHALLOW_RAMP_LOW - base orientation slopes toward N (+Z)
+		FaceOccupancy.SHALLOW_END_LOW, #S - low end
+		FaceOccupancy.SHALLOW_END_MED, #N - medium end (meets high's S)
+		FaceOccupancy.SHALLOW_SIDE_LOW_N, #W - trapezoid, slope toward N
+		FaceOccupancy.SHALLOW_SIDE_LOW_N, #E - trapezoid, slope toward N
+		FaceOccupancy.EMPTY, #U - sloped top, doesn't cull
+		FaceOccupancy.EMPTY, #D - sloped bottom, doesn't cull
 	],
-	11: [ # SHALLOW_RAMP_HIGH
-		FaceOccupancy.EMPTY, #S
-		FaceOccupancy.EMPTY, #N
-		FaceOccupancy.EMPTY, #W
-		FaceOccupancy.EMPTY, #E
-		FaceOccupancy.EMPTY, #U
-		FaceOccupancy.EMPTY, #D
+	11: [ # SHALLOW_RAMP_HIGH - base orientation slopes toward N (+Z)
+		FaceOccupancy.SHALLOW_END_MED, #S - medium end (meets low's N)
+		FaceOccupancy.SHALLOW_END_HIGH, #N - high end
+		FaceOccupancy.SHALLOW_SIDE_HIGH_N, #W - trapezoid, slope toward N
+		FaceOccupancy.SHALLOW_SIDE_HIGH_N, #E - trapezoid, slope toward N
+		FaceOccupancy.EMPTY, #U - sloped top, doesn't cull
+		FaceOccupancy.EMPTY, #D - sloped bottom, doesn't cull
 	],
 	12: [ # PIPE
 		FaceOccupancy.OCTAGON, #S
@@ -1050,6 +1065,9 @@ const BLOCK_OCCUPANCIES : Dictionary = {
 #rotates clockwise once around the Z axis
 func z_rotate_face_occupancy(face:FaceOccupancy,side:int)->FaceOccupancy:
 	if face<FaceOccupancy.TRI0 || face>FaceOccupancy.TRI3:
+		# Non-triangle occupancies (QUAD, OCTAGON, SLIM, SHALLOW_*) don't need
+		# value transformation when rotated - the face mapping handles geometry,
+		# and identical ramps side-by-side will have matching occupancies
 		return face
 	#TRI
 	match(side):
@@ -1061,12 +1079,78 @@ func z_rotate_face_occupancy(face:FaceOccupancy,side:int)->FaceOccupancy:
 	return FaceOccupancy.QUAD
 
 func z_rotate_face_occupancy_n_times(face_occupancy:FaceOccupancy,side:int,n:int)->FaceOccupancy:
+	# Special handling for shallow ramp occupancies - need full rotation context
+	if face_occupancy >= FaceOccupancy.SHALLOW_END_LOW:
+		return transform_shallow_occupancy(face_occupancy, n)
+	
+	# Original logic for triangles and other shapes
 	for i in range(n):
 		face_occupancy = z_rotate_face_occupancy(face_occupancy,side)
 		side = Glob.rotDir[side]
 	return face_occupancy
 
-var vflip_occupancies:Array[FaceOccupancy] = [FaceOccupancy.TRI3,FaceOccupancy.TRI2,FaceOccupancy.TRI1,FaceOccupancy.TRI0,FaceOccupancy.QUAD,FaceOccupancy.OCTAGON,FaceOccupancy.SLIM]
+# Transform shallow ramp occupancies based on total rotation amount
+func transform_shallow_occupancy(occ: FaceOccupancy, rotations: int) -> FaceOccupancy:
+	rotations = rotations % 4  # Normalize to 0-3
+	if rotations == 0:
+		return occ
+	
+	# END occupancies don't change direction, just position (handled by face mapping)
+	if occ >= FaceOccupancy.SHALLOW_END_LOW and occ <= FaceOccupancy.SHALLOW_END_HIGH:
+		return occ
+	
+	# SIDE occupancies: rotate the slope direction
+	# Direction rotation: N→E→S→W→N (clockwise when viewed from above)
+	var dir_rotate = [
+		[DirEnum.N, DirEnum.E, DirEnum.S, DirEnum.W],  # from N
+		[DirEnum.S, DirEnum.W, DirEnum.N, DirEnum.E],  # from S
+		[DirEnum.E, DirEnum.S, DirEnum.W, DirEnum.N],  # from E
+		[DirEnum.W, DirEnum.N, DirEnum.E, DirEnum.S],  # from W
+	]
+	# Index: 0=N, 1=S, 2=E, 3=W
+	
+	# Determine if LOW or HIGH and extract direction
+	var is_low = (occ >= FaceOccupancy.SHALLOW_SIDE_LOW_N and occ <= FaceOccupancy.SHALLOW_SIDE_LOW_W)
+	var dir_idx: int
+	if is_low:
+		dir_idx = occ - FaceOccupancy.SHALLOW_SIDE_LOW_N  # 0=N, 1=S, 2=E, 3=W
+	else:
+		dir_idx = occ - FaceOccupancy.SHALLOW_SIDE_HIGH_N  # 0=N, 1=S, 2=E, 3=W
+	
+	# Get rotated direction
+	var new_dir = dir_rotate[dir_idx][rotations]
+	
+	# Convert back to occupancy
+	# dir_idx mapping: N=0, S=1, E=2, W=3
+	var dir_to_idx = {DirEnum.N: 0, DirEnum.S: 1, DirEnum.E: 2, DirEnum.W: 3}
+	var new_dir_idx = dir_to_idx[new_dir]
+	
+	if is_low:
+		return (FaceOccupancy.SHALLOW_SIDE_LOW_N + new_dir_idx) as FaceOccupancy
+	else:
+		return (FaceOccupancy.SHALLOW_SIDE_HIGH_N + new_dir_idx) as FaceOccupancy
+
+var vflip_occupancies:Array[FaceOccupancy] = [
+	FaceOccupancy.TRI3,           # 0: TRI0 -> TRI3
+	FaceOccupancy.TRI2,           # 1: TRI1 -> TRI2
+	FaceOccupancy.TRI1,           # 2: TRI2 -> TRI1
+	FaceOccupancy.TRI0,           # 3: TRI3 -> TRI0
+	FaceOccupancy.QUAD,           # 4: QUAD -> QUAD
+	FaceOccupancy.OCTAGON,        # 5: OCTAGON -> OCTAGON
+	FaceOccupancy.SLIM,           # 6: SLIM -> SLIM
+	FaceOccupancy.SHALLOW_END_HIGH,    # 7: SHALLOW_END_LOW -> SHALLOW_END_HIGH
+	FaceOccupancy.SHALLOW_END_MED,     # 8: SHALLOW_END_MED -> SHALLOW_END_MED
+	FaceOccupancy.SHALLOW_END_LOW,     # 9: SHALLOW_END_HIGH -> SHALLOW_END_LOW
+	# Vflip swaps LOW↔HIGH but keeps direction the same
+	FaceOccupancy.SHALLOW_SIDE_HIGH_N, # 10: SHALLOW_SIDE_LOW_N -> SHALLOW_SIDE_HIGH_N
+	FaceOccupancy.SHALLOW_SIDE_HIGH_S, # 11: SHALLOW_SIDE_LOW_S -> SHALLOW_SIDE_HIGH_S
+	FaceOccupancy.SHALLOW_SIDE_HIGH_E, # 12: SHALLOW_SIDE_LOW_E -> SHALLOW_SIDE_HIGH_E
+	FaceOccupancy.SHALLOW_SIDE_HIGH_W, # 13: SHALLOW_SIDE_LOW_W -> SHALLOW_SIDE_HIGH_W
+	FaceOccupancy.SHALLOW_SIDE_LOW_N,  # 14: SHALLOW_SIDE_HIGH_N -> SHALLOW_SIDE_LOW_N
+	FaceOccupancy.SHALLOW_SIDE_LOW_S,  # 15: SHALLOW_SIDE_HIGH_S -> SHALLOW_SIDE_LOW_S
+	FaceOccupancy.SHALLOW_SIDE_LOW_E,  # 16: SHALLOW_SIDE_HIGH_E -> SHALLOW_SIDE_LOW_E
+	FaceOccupancy.SHALLOW_SIDE_LOW_W,  # 17: SHALLOW_SIDE_HIGH_W -> SHALLOW_SIDE_LOW_W
+]
 func vflip_face_occupancy(face_occupancy:FaceOccupancy,side:int)->FaceOccupancy:
 	if side==DirEnum.U or side==DirEnum.D:
 		return face_occupancy
@@ -1159,3 +1243,160 @@ func _ready() -> void:
 	generate_projected_uvs(pipe_dat)
 	generateUVPatterns()
 	generateShapeDats()
+	#test_shallow_ramp_occupancies()  # Commented out - tests passed
+	
+
+# ============ SHALLOW RAMP OCCUPANCY DEBUG/TEST ============
+func test_shallow_ramp_occupancies():
+	var face_names = ["S", "N", "W", "E", "U", "D"]
+	
+	print("\n========== SHALLOW RAMP OCCUPANCY TEST ==========")
+	
+	# Print occupancies for all rotations of LOW and HIGH ramps
+	for shape_i in [SHALLOW_RAMP_LOW, SHALLOW_RAMP_HIGH]:
+		var shape_name = "LOW" if shape_i == SHALLOW_RAMP_LOW else "HIGH"
+		print("\n--- SHALLOW_RAMP_", shape_name, " ---")
+		
+		for rot in range(4):
+			for vflip in [false, true]:
+				var vflip_i = 1 if vflip else 0
+				var shape = database[shape_i][rot][vflip_i]
+				var occ_str = ""
+				for face_i in range(6):
+					occ_str += face_names[face_i] + "=" + str(shape.face_occupancy[face_i]) + " "
+				print("  rot=", rot, " vflip=", vflip, ": ", occ_str)
+	
+	print("\n--- ADJACENCY TESTS ---")
+	# Test: Two LOW ramps side by side, same rotation (should cull)
+	test_adjacency("LOW rot=0 E-face vs LOW rot=0 W-face (same dir, should cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 3,  # E face of first
+		SHALLOW_RAMP_LOW, 0, false, 2)  # W face of second
+	
+	# Test: Two LOW ramps side by side, opposite rotation (should NOT cull)
+	test_adjacency("LOW rot=0 E-face vs LOW rot=2 W-face (opposite dir, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 3,
+		SHALLOW_RAMP_LOW, 2, false, 2)
+	
+	# Test: LOW N-face vs HIGH S-face (should cull - same height SHALLOW_END_MED)
+	test_adjacency("LOW rot=0 N-face vs HIGH rot=0 S-face (end-to-end, should cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,  # N face
+		SHALLOW_RAMP_HIGH, 0, false, 0) # S face
+	
+	# Test: Two HIGH ramps, rot=0 and rot=0 (should cull)
+	test_adjacency("HIGH rot=0 E-face vs HIGH rot=0 W-face (same dir, should cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 3,
+		SHALLOW_RAMP_HIGH, 0, false, 2)
+	
+	# Test: Rotational invariance - rot=1 same dir
+	# Note: For rot=1, SIDES are on S/N faces (trapezoids), W/E are ENDS (rectangles)
+	test_adjacency("LOW rot=1 N-face vs LOW rot=1 S-face (sides, same dir rot=1, should cull)", 
+		SHALLOW_RAMP_LOW, 1, false, 1,  # N face = trapezoid
+		SHALLOW_RAMP_LOW, 1, false, 0)  # S face = trapezoid
+	
+	# Test: rot=1 W/E faces are ENDS (rectangles at different heights) - should NOT cull
+	test_adjacency("LOW rot=1 E-face vs LOW rot=1 W-face (ends, different heights, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 1, false, 3,  # E face = SHALLOW_END_MED
+		SHALLOW_RAMP_LOW, 1, false, 2)  # W face = SHALLOW_END_LOW
+	
+	# Test: LOW rot=0 vs LOW rot=1 (perpendicular, probably shouldn't cull?)
+	test_adjacency("LOW rot=0 E-face vs LOW rot=1 W-face (perpendicular, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 3,
+		SHALLOW_RAMP_LOW, 1, false, 2)
+	
+	# Test: rot=2 sides (W/E are trapezoids for rot=0,2)
+	test_adjacency("LOW rot=2 E-face vs LOW rot=2 W-face (sides, same dir rot=2, should cull)", 
+		SHALLOW_RAMP_LOW, 2, false, 3,
+		SHALLOW_RAMP_LOW, 2, false, 2)
+	
+	# Test: rot=3 sides (S/N are trapezoids for rot=1,3)
+	test_adjacency("LOW rot=3 N-face vs LOW rot=3 S-face (sides, same dir rot=3, should cull)", 
+		SHALLOW_RAMP_LOW, 3, false, 1,
+		SHALLOW_RAMP_LOW, 3, false, 0)
+	
+	# Test: LOW and HIGH same rotation side-by-side (different heights, same dir)
+	test_adjacency("LOW rot=0 E-face vs HIGH rot=0 W-face (LOW vs HIGH sides, same dir, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 3,
+		SHALLOW_RAMP_HIGH, 0, false, 2)
+	
+	print("\n--- CRISS-CROSS TESTS (opposite slope directions) ---")
+	# Criss-cross: two ramps facing opposite directions side-by-side
+	# These should NEVER cull because their diagonal edges don't meet flush
+	
+	# E/W adjacency, opposite slopes
+	test_adjacency("CRISS-CROSS: LOW rot=0 E vs LOW rot=2 W (N-slope vs S-slope, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 3,   # E face, slopes toward N
+		SHALLOW_RAMP_LOW, 2, false, 2)   # W face, slopes toward S
+	
+	test_adjacency("CRISS-CROSS: HIGH rot=0 E vs HIGH rot=2 W (N-slope vs S-slope, should NOT cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 3,
+		SHALLOW_RAMP_HIGH, 2, false, 2)
+	
+	# N/S adjacency, opposite slopes (rot=1 vs rot=3)
+	test_adjacency("CRISS-CROSS: LOW rot=1 N vs LOW rot=3 S (E-slope vs W-slope, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 1, false, 1,   # N face, slopes toward E
+		SHALLOW_RAMP_LOW, 3, false, 0)   # S face, slopes toward W
+	
+	# Mixed: rot=0 vs rot=1 (perpendicular - one is END, one is SIDE)
+	test_adjacency("CRISS-CROSS: LOW rot=0 N vs LOW rot=1 S (end vs side, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,   # N face = END (SHALLOW_END_MED)
+		SHALLOW_RAMP_LOW, 1, false, 0)   # S face = SIDE (trapezoid)
+	
+	# Same direction but different heights (LOW next to HIGH, side faces)
+	test_adjacency("ADJACENT: LOW rot=0 W vs HIGH rot=0 E (same dir N, LOW vs HIGH trapezoid, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 2,   # W face = SHALLOW_SIDE_LOW_N
+		SHALLOW_RAMP_HIGH, 0, false, 3)  # E face = SHALLOW_SIDE_HIGH_N
+	
+	# What about vflipped criss-cross?
+	test_adjacency("CRISS-CROSS VFLIP: LOW rot=0 vflip E vs LOW rot=2 vflip W (should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, true, 3,
+		SHALLOW_RAMP_LOW, 2, true, 2)
+	
+	print("\n--- END CAP TESTS (N/S adjacency at z=0 and z=1) ---")
+	# For tiles at z=0 and z=1: z=0's N-face touches z=1's S-face
+	
+	# Continuous slope: LOW followed by HIGH (should cull - both MED height)
+	test_adjacency("END CAP: LOW(z=0) N vs HIGH(z=1) S (MED meets MED, should cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,   # N face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_HIGH, 0, false, 0)  # S face = SHALLOW_END_MED (8)
+	
+	# Two LOWs in a row (step - should NOT cull, different heights)
+	test_adjacency("END CAP: LOW(z=0) N vs LOW(z=1) S (MED meets LOW, should NOT cull)", 
+		SHALLOW_RAMP_LOW, 0, false, 1,   # N face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_LOW, 0, false, 0)   # S face = SHALLOW_END_LOW (7)
+	
+	# Two HIGHs in a row (step - should NOT cull)
+	test_adjacency("END CAP: HIGH(z=0) N vs HIGH(z=1) S (HIGH meets MED, should NOT cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 1,  # N face = SHALLOW_END_HIGH (9)
+		SHALLOW_RAMP_HIGH, 0, false, 0)  # S face = SHALLOW_END_MED (8)
+	
+	# HIGH followed by LOW (big step - should NOT cull)
+	test_adjacency("END CAP: HIGH(z=0) N vs LOW(z=1) S (HIGH meets LOW, should NOT cull)", 
+		SHALLOW_RAMP_HIGH, 0, false, 1,  # N face = SHALLOW_END_HIGH (9)
+		SHALLOW_RAMP_LOW, 0, false, 0)   # S face = SHALLOW_END_LOW (7)
+	
+	# Rotated: rot=1 uses W/E as ends
+	test_adjacency("END CAP ROT1: LOW(x=0) E vs HIGH(x=1) W (MED meets MED, should cull)", 
+		SHALLOW_RAMP_LOW, 1, false, 3,   # E face = SHALLOW_END_MED (8)
+		SHALLOW_RAMP_HIGH, 1, false, 2)  # W face = SHALLOW_END_MED (8)
+	
+	print("\n========== END TEST ==========\n")
+
+func test_adjacency(desc: String, shape1: int, rot1: int, vflip1: bool, face1: int, 
+					shape2: int, rot2: int, vflip2: bool, face2: int):
+	var vf1 = 1 if vflip1 else 0
+	var vf2 = 1 if vflip2 else 0
+	var occ1 = database[shape1][rot1][vf1].face_occupancy[face1]
+	var occ2 = database[shape2][rot2][vf2].face_occupancy[face2]
+	
+	# Check if they would cull (for sides: L matches R, for ends: same matches same)
+	var would_cull = check_occupancy_match(occ1, occ2)
+	
+	print("  ", desc)
+	print("    occ1=", occ1, " occ2=", occ2, " -> ", "CULL" if would_cull else "NO CULL")
+
+func check_occupancy_match(occ1: int, occ2: int) -> bool:
+	# EMPTY never culls
+	if occ1 == FaceOccupancy.EMPTY or occ2 == FaceOccupancy.EMPTY:
+		return false
+	# With direction-based scheme, same value = same geometry = cull
+	return occ1 == occ2

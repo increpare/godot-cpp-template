@@ -5,6 +5,9 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
+#include <algorithm>
+
 
 using namespace godot;
 
@@ -17,14 +20,27 @@ enum FaceOccupancy {
 	OCCUPANCY_TRI3 = 3,
 	OCCUPANCY_QUAD = 4,
 	OCCUPANCY_OCTAGON = 5,
-	OCCUPANCY_SLIM = 6
+	OCCUPANCY_SLIM = 6,
+	// Shallow ramp end pieces - rectangles at different heights
+	OCCUPANCY_SHALLOW_END_LOW = 7,
+	OCCUPANCY_SHALLOW_END_MED = 8,
+	OCCUPANCY_SHALLOW_END_HIGH = 9,
+	// Shallow ramp side pieces - trapezoids encoded by SLOPE DIRECTION
+	// Two sides cull only if same height AND same slope direction (same value)
+	OCCUPANCY_SHALLOW_SIDE_LOW_N = 10,  // LOW trapezoid, slopes toward N
+	OCCUPANCY_SHALLOW_SIDE_LOW_S = 11,  // LOW trapezoid, slopes toward S
+	OCCUPANCY_SHALLOW_SIDE_LOW_E = 12,  // LOW trapezoid, slopes toward E
+	OCCUPANCY_SHALLOW_SIDE_LOW_W = 13,  // LOW trapezoid, slopes toward W
+	OCCUPANCY_SHALLOW_SIDE_HIGH_N = 14, // HIGH trapezoid, slopes toward N
+	OCCUPANCY_SHALLOW_SIDE_HIGH_S = 15, // HIGH trapezoid, slopes toward S
+	OCCUPANCY_SHALLOW_SIDE_HIGH_E = 16, // HIGH trapezoid, slopes toward E
+	OCCUPANCY_SHALLOW_SIDE_HIGH_W = 17, // HIGH trapezoid, slopes toward W
+	OCCUPANCY_MAX = 18  // For array sizing
 };
 
-// Ported from Shapes.gd
-static bool occupancy_fits(int subject, int container) {
-	if (container == OCCUPANCY_QUAD && subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD) {
-		return true;
-	}
+// Ported from Shapes.gd - optimized with early returns
+static inline bool occupancy_fits(int subject, int container) {
+	// Early exit for common cases
 	if (subject == OCCUPANCY_EMPTY) {
 		return true;
 	}
@@ -34,11 +50,12 @@ static bool occupancy_fits(int subject, int container) {
 	if (subject == container) {
 		return true;
 	}
-	if (subject < 4 && container == OCCUPANCY_QUAD) {
-		return true;
+	// QUAD can contain triangles and quads
+	if (container == OCCUPANCY_QUAD) {
+		return (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
 	}
-	// For triangles, they must match exactly (assuming standard 4 quadrants)
-	return subject == container;
+	// For triangles, they must match exactly
+	return false;
 }
 
 static const Vector3i DIR_OFFSETS[6] = {
@@ -72,6 +89,14 @@ VoxelMesher::VoxelMesher() {
 	noise1->set_noise_type(FastNoiseLite::TYPE_VALUE);
 	noise2->set_noise_type(FastNoiseLite::TYPE_VALUE);
 	noise3->set_noise_type(FastNoiseLite::TYPE_VALUE);
+	
+	// Cache noise pointers once - reused across all 195 chunk generations!
+	cached_noise1 = noise1.ptr();
+	cached_noise2 = noise2.ptr();
+	cached_noise3 = noise3.ptr();
+	
+	// Initialize cached dimensions to invalid values
+	cached_size_x = cached_size_y = cached_size_z = -1;
 }
 
 VoxelMesher::~VoxelMesher() {
@@ -93,7 +118,16 @@ void VoxelMesher::set_texture_dimensions(float width, float height) {
 }
 
 void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns) {
-	shape_database.clear();
+	// Clear direct array lookup - initialize all entries as invalid
+	for (int i = 0; i < 256; i++) {
+		shape_lookup_valid[i] = false;
+		shape_lookup_array[i] = nullptr;
+		// Initialize face occupancies to EMPTY for safety (flattened indexing)
+		for (int face_dir = 0; face_dir < 6; face_dir++) {
+			face_occupancy_cache[i * 6 + face_dir] = OCCUPANCY_EMPTY;
+		}
+	}
+	
 	uv_patterns.clear();
 	
 	std::map<String, int> pattern_name_to_index;
@@ -111,22 +145,24 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 		uv_patterns.push_back(uv_vec);
 	}
 
-	// Parse Shape Database
-	// database[shape_index][rotation][vflip]
+	// Parse Shape Database - store directly into flattened array
+	// Key format: shape_type | (rotation << 4) | (vflip << 6)
+	// Encodes all combinations in a single byte (shape_type: 0-12, rotation: 0-3, vflip: 0-1)
 	for (int i = 0; i < gd_database.size(); i++) {
 		Array shape_rots_arr = gd_database[i];
-		std::vector<std::vector<ShapeVariant>> rots_vec;
 		
 		for (int r = 0; r < shape_rots_arr.size(); r++) {
 			Array shape_flips_arr = shape_rots_arr[r];
-			std::vector<ShapeVariant> flips_vec;
 
 			for (int f = 0; f < shape_flips_arr.size(); f++) {
 				Dictionary shape_dict = shape_flips_arr[f];
-				ShapeVariant sv;
+				uint8_t key = ((uint8_t)i) | ((uint8_t)r << 4) | ((uint8_t)f << 6);
+				
+				ShapeVariant &sv = shape_database[key];
 
 				// Vertices
 				Array verts = shape_dict["vertices"];
+				sv.vertices.clear();
 				for (int v = 0; v < verts.size(); v++) {
 					sv.vertices.push_back(verts[v]);
 				}
@@ -138,11 +174,13 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				Array occupyface = shape_dict["occupyface"];
 				Array face_occupancy = shape_dict["face_occupancy"];
 
+				sv.faces.clear();
 				for (int face_idx = 0; face_idx < faces.size(); face_idx++) {
 					FaceData fd;
 					
 					// Indices
 					Array indices = faces[face_idx];
+					fd.indices.clear();
 					for (int k = 0; k < indices.size(); k++) {
 						fd.indices.push_back(indices[k]);
 					}
@@ -162,11 +200,49 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 					sv.faces.push_back(fd);
 				}
 
-				flips_vec.push_back(sv);
+				// Build direct array lookup for O(1) shape access with zero overhead!
+				shape_lookup_array[key] = &shape_database[key];
+				shape_lookup_valid[key] = true;
+				
+				// Pre-cache face occupancies for all 6 faces - eliminates shape->faces[dir] indirection
+				const size_t face_count = sv.faces.size();
+				for (int face_dir = 0; face_dir < 6; face_dir++) {
+					if (face_dir < (int)face_count) {
+						face_occupancy_cache[key * 6 + face_dir] = (int8_t)sv.faces[face_dir].face_occupancy;
+					} else {
+						face_occupancy_cache[key * 6 + face_dir] = OCCUPANCY_EMPTY;
+					}
+				}
 			}
-			rots_vec.push_back(flips_vec);
 		}
-		shape_database.push_back(rots_vec);
+	}
+	
+	// Pre-compute occupancy_fits lookup table - eliminates function call overhead
+	// Map occupancy values (-1 to 17) to indices (0 to 18) by adding 1
+	// occupancy_fits_table[subject+1][container+1] = true if subject fits in container
+	for (int subject = -1; subject <= 17; subject++) {
+		for (int container = -1; container <= 17; container++) {
+			int sub_idx = subject + 1;
+			int cont_idx = container + 1;
+			
+			bool fits = false;
+			if (subject == OCCUPANCY_EMPTY) {
+				fits = true;
+			} else if (container == OCCUPANCY_EMPTY) {
+				fits = false;
+			} else if (subject == container) {
+				fits = true;
+			} else if (container == OCCUPANCY_QUAD) {
+				fits = (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
+			} else {
+				// For all other occupancies (including shallow ramp sides):
+				// Same value = same geometry = can cull
+				// Different values = different geometry = cannot cull
+				fits = (subject == container);
+			}
+			
+			occupancy_fits_table[sub_idx * 19 + cont_idx] = fits;
+		}
 	}
 }
 
@@ -198,6 +274,49 @@ void VoxelMesher::_cache_wobbled_verts(const Vector3i &voxel, const ShapeVariant
 	}
 }
 
+// Fast inverse square root approximation (Quake III algorithm)
+static inline float fast_inv_sqrt(float x) {
+	union { float f; std::uint32_t i; } conv;
+	conv.f = x;
+	conv.i = 0x5f3759df - (conv.i >> 1);
+	conv.f *= 1.5f - (x * 0.5f * conv.f * conv.f);
+	return conv.f;
+}
+
+// Simple scalar helpers - SIMD overhead isn't worth it for small operations
+static inline void cross_product_normalized(
+	const float v0x, const float v0y, const float v0z,
+	const float v1x, const float v1y, const float v1z,
+	const float v2x, const float v2y, const float v2z,
+	float &out_x, float &out_y, float &out_z,
+	float norm_threshold) {
+	
+	// Calculate edges: e1 = v1 - v0, e2 = v2 - v0
+	const float e1x = v1x - v0x;
+	const float e1y = v1y - v0y;
+	const float e1z = v1z - v0z;
+	const float e2x = v2x - v0x;
+	const float e2y = v2y - v0y;
+	const float e2z = v2z - v0z;
+	
+	// Cross product: e1 × e2
+	out_x = e1y * e2z - e1z * e2y;
+	out_y = e1z * e2x - e1x * e2z;
+	out_z = e1x * e2y - e1y * e2x;
+	
+	// Normalize using fast inverse sqrt
+	const float len_sq = out_x * out_x + out_y * out_y + out_z * out_z;
+	if (len_sq > norm_threshold) {
+		const float inv_len = fast_inv_sqrt(len_sq);
+		out_x *= -inv_len; // Negate for face normal
+		out_y *= -inv_len;
+		out_z *= -inv_len;
+	} else {
+		out_x = out_y = 0.0f;
+		out_z = -1.0f; // Default normal
+	}
+}
+
 Dictionary VoxelMesher::generate_chunk_mesh(
 		const Vector3i &chunk_coord,
 		const Array &voxels,
@@ -205,238 +324,377 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const Array &layer_visibility,
 		int size_x, int size_y, int size_z) {
 	
-	int voxel_count = voxels.size();
+	const int voxel_count = voxels.size();
 
-	// Output buffers - using std::vector for performance
-	std::vector<Vector3> final_vertices;
-	std::vector<Vector3> final_normals;
-	std::vector<Color> final_normals_smoothed;
-	std::vector<Vector2> final_uvs;
-	
+	Ref<ArrayMesh> array_mesh;
+	array_mesh.instantiate();
+
 	// Tri-voxel info to return for raycasting/interaction logic
-	// Each entry: [voxel_index_in_input_array, face_index]
-	// OPTIMIZATION: Use PackedInt32Array to avoid thousands of small Array allocations
 	PackedInt32Array tri_voxel_info;
 
+	// Early exit for empty chunks
 	if (voxel_count == 0) {
 		Dictionary result;
-		result["mesh_arrays"] = Array(); 
+		result["arraymesh"] = array_mesh;
 		result["tri_voxel_info"] = tri_voxel_info;
 		return result;
 	}
 
-	// Heuristic reservation
-	int reserve_size = voxel_count * 24; 
-	final_vertices.reserve(reserve_size);
-	final_normals.reserve(reserve_size);
-	final_normals_smoothed.reserve(reserve_size);
-	final_uvs.reserve(reserve_size);
-	// 2 ints per triangle (3 verts) -> approx 2/3 ints per vertex
+	// Clear reusable output buffers (memory stays allocated)
+	final_vertices.clear();
+	final_normals.clear();
+	final_normals_smoothed.clear();
+	final_uvs.clear();
+	
 	tri_voxel_info.resize(0); 
 
-	// 1. Unpack Data Structures
-	struct VoxelData {
-		int16_t shape_type;
-		int16_t tx, ty;
-		int8_t rot;
-		bool vflip;
-		int8_t layer;
-	};
+	// Reserve space if needed (only grows, never shrinks)
+	const int reserve_size = voxel_count * 32;
+	if (final_vertices.capacity() < reserve_size) {
+		final_vertices.reserve(reserve_size);
+		final_normals.reserve(reserve_size);
+		final_normals_smoothed.reserve(reserve_size);
+		final_uvs.reserve(reserve_size);
+	}
 
-	std::vector<VoxelData> unpacked_props;
-	unpacked_props.reserve(voxel_count);
+	// 1. Unpack Data Structures - reuse member buffers
+	unpacked_props.clear();
+	unpacked_voxels.clear();
+	
+	if (unpacked_props.capacity() < voxel_count) {
+		unpacked_props.reserve(voxel_count);
+		unpacked_voxels.reserve(voxel_count);
+	}
 
-	std::vector<Vector3i> unpacked_voxels;
-	unpacked_voxels.reserve(voxel_count);
-
+	// OPTIMIZATION: Unpack data in a single pass with minimal allocations
 	for (int i = 0; i < voxel_count; i++) {
 		unpacked_voxels.push_back(voxels[i]);
 
-		Array props = voxel_properties[i];
+		const Array &props = voxel_properties[i];
 		VoxelData vd;
-		vd.shape_type = (int)props[0];
-		vd.tx = (int)props[1];
-		vd.ty = (int)props[2];
-		vd.rot = (int)props[3];
+		// Direct access - assumes valid data structure
+		vd.shape_type = (int16_t)(int)props[0];
+		vd.tx = (int16_t)(int)props[1];
+		vd.ty = (int16_t)(int)props[2];
+		vd.rot = (int8_t)(int)props[3];
 		vd.vflip = (bool)props[4];
-		vd.layer = (int)props[5];
+		vd.layer = (int8_t)(int)props[5];
 		unpacked_props.push_back(vd);
 	}
 
-	std::vector<bool> layers_vis;
-	layers_vis.reserve(layer_visibility.size());
-	for(int i=0; i<layer_visibility.size(); ++i) {
+	// Layer visibility - convert once, reuse buffer
+	const int layer_count = layer_visibility.size();
+	layers_vis.clear();
+	if (layers_vis.capacity() < layer_count) {
+		layers_vis.reserve(layer_count);
+	}
+	for(int i = 0; i < layer_count; ++i) {
 		layers_vis.push_back(layer_visibility[i]);
 	}
 
-	// Grid Cache
-	std::vector<int> grid_cache(size_x * size_y * size_z, -1);
+	// Grid Cache - resize only if dimensions changed (they're constant, so this happens once)
+	const int grid_size = size_x * size_y * size_z;
+	if (cached_size_x != size_x || cached_size_y != size_y || cached_size_z != size_z) {
+		grid_cache.resize(grid_size);
+		cached_size_x = size_x;
+		cached_size_y = size_y;
+		cached_size_z = size_z;
+	}
 	
-	Vector3i offset = Vector3i(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
-	int stride_y = size_x;
-	int stride_z = size_x * size_y;
+	// Clear grid cache (fill with -1)
+	std::fill(grid_cache.begin(), grid_cache.end(), -1);
+	
+	const Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
+	const int stride_y = size_x;
+	const int stride_z = size_x * size_y;
 
-	// Populate grid cache
+	// Populate grid cache - optimized bounds checking with single comparison
 	for (int i = 0; i < voxel_count; i++) {
 		const Vector3i &v = unpacked_voxels[i];
-		int lx = v.x - offset.x;
-		int ly = v.y - offset.y;
-		int lz = v.z - offset.z;
+		const int lx = v.x - offset.x;
+		const int ly = v.y - offset.y;
+		const int lz = v.z - offset.z;
 		
-		if (lx >= 0 && lx < size_x && ly >= 0 && ly < size_y && lz >= 0 && lz < size_z) {
+		// Single bounds check using unsigned comparison trick
+		if ((unsigned)lx < (unsigned)size_x && 
+		    (unsigned)ly < (unsigned)size_y && 
+		    (unsigned)lz < (unsigned)size_z) {
 			grid_cache[lx + ly * stride_y + lz * stride_z] = i;
 		}
 	}
 
-	// Temporary buffers
-	std::vector<Vector3> cached_wobbled_local_verts;
-	std::vector<Color> cached_vertex_colors;
-	// Reserve some space to avoid reallocations
-	cached_wobbled_local_verts.reserve(256);
-	cached_vertex_colors.reserve(256);
-
-	FastNoiseLite *n1 = noise1.ptr();
-	FastNoiseLite *n2 = noise2.ptr();
-	FastNoiseLite *n3 = noise3.ptr();
-
+	// ALGORITHMIC OPTIMIZATION: Pre-cache shape variant pointers to avoid repeated lookups
+	// Reuse member buffer
+	voxel_cache.clear();
+	voxel_cache.resize(voxel_count);
+	
+	// Pre-cache all shape variants (one-time cost, eliminates repeated 3-level lookups)
 	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
 		const VoxelData &props = unpacked_props[voxel_index];
-
-		if (props.layer >= (int)layers_vis.size() || !layers_vis[props.layer]) {
+		CachedVoxelInfo &cache_entry = voxel_cache[voxel_index];
+		
+		// Early exit for invisible layers
+		if (props.layer >= layer_count || !layers_vis[props.layer]) {
+			cache_entry.valid = false;
 			continue;
 		}
 
-		if (props.shape_type < 0 || props.shape_type >= shape_database.size()) continue;
-		const auto &rots = shape_database[props.shape_type];
-		if (props.rot < 0 || props.rot >= rots.size()) continue;
-		const auto &flips = rots[props.rot];
-		int vflip_index = props.vflip ? 1 : 0;
-		if (vflip_index < 0 || vflip_index >= flips.size()) continue;
-		const ShapeVariant &shape_data = flips[vflip_index];
+		// Validate and cache shape access using direct array lookup - single byte key!
+		// Encoding: shape_type | (rotation << 4) | (vflip << 6) - fits in 8 bits
+		uint8_t lookup_key = ((uint8_t)props.shape_type) | ((uint8_t)props.rot << 4) | ((props.vflip ? 1 : 0) << 6);
+		
+		// Direct array access - O(1) with zero hash overhead!
+		if (!shape_lookup_valid[lookup_key]) {
+			cache_entry.valid = false;
+			continue;
+		}
+		
+		// Cache the shape variant pointer - direct array access, fastest possible lookup!
+		cache_entry.shape_ptr = shape_lookup_array[lookup_key];
+		cache_entry.lookup_key = lookup_key; // Store for direct face occupancy cache access
+		cache_entry.voxel_pos = unpacked_voxels[voxel_index];
+		cache_entry.local_x = cache_entry.voxel_pos.x - offset.x;
+		cache_entry.local_y = cache_entry.voxel_pos.y - offset.y;
+		cache_entry.local_z = cache_entry.voxel_pos.z - offset.z;
+		cache_entry.valid = true;
+	}
+
+	// Temporary buffers - reuse member buffers (cleared per voxel)
+	cached_wobbled_local_verts.clear();
+	cached_vertex_colors.clear();
+	if (cached_wobbled_local_verts.capacity() < 512) {
+		cached_wobbled_local_verts.reserve(512);
+		cached_vertex_colors.reserve(512);
+	}
+
+	// Use cached noise pointers - no .ptr() calls needed!
+	FastNoiseLite *n1 = cached_noise1;
+	FastNoiseLite *n2 = cached_noise2;
+	FastNoiseLite *n3 = cached_noise3;
+
+	// Pre-compute constants
+	const float noise_scale = 0.1f;
+	const float half_scale = 0.5f;
+	const float norm_threshold = 0.0001f;
+	const float default_color = 0.5f;
+
+	// Main voxel processing loop - single pass with lazy evaluation preserved
+	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
+		const CachedVoxelInfo &cache_entry = voxel_cache[voxel_index];
+		
+		// Skip invalid/invisible voxels
+		if (!cache_entry.valid) {
+			continue;
+		}
+
+		const VoxelData &props = unpacked_props[voxel_index];
+		const ShapeVariant &shape_data = *cache_entry.shape_ptr; // Direct cached access!
 
 		// LAZY CALCULATION: Don't calculate noise unless we actually render a face
 		bool wobbled_calculated = false;
 
-		const Vector3i &voxel = unpacked_voxels[voxel_index];
-		Vector3 v_vec(voxel);
-		int local_x = voxel.x - offset.x;
-		int local_y = voxel.y - offset.y;
-		int local_z = voxel.z - offset.z;
+		const Vector3 v_vec(cache_entry.voxel_pos.x, cache_entry.voxel_pos.y, cache_entry.voxel_pos.z);
 
-		for (size_t face_idx = 0; face_idx < shape_data.faces.size(); face_idx++) {
+		// Process faces
+		const size_t face_count = shape_data.faces.size();
+		for (size_t face_idx = 0; face_idx < face_count; face_idx++) {
 			const FaceData &face = shape_data.faces[face_idx];
-			if (face.indices.empty()) continue;
+			const size_t indices_size = face.indices.size();
+			if (indices_size == 0) continue;
 
-			// Neighbor check
+			// Neighbor check - optimized with early exits and cached shape access
 			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {
-				Vector3i dir_offset = DIR_OFFSETS[face_idx];
-				int nlx = local_x + dir_offset.x;
-				int nly = local_y + dir_offset.y;
-				int nlz = local_z + dir_offset.z;
+				const Vector3i &dir_offset = DIR_OFFSETS[face_idx];
+				const int nlx = cache_entry.local_x + dir_offset.x;
+				const int nly = cache_entry.local_y + dir_offset.y;
+				const int nlz = cache_entry.local_z + dir_offset.z;
+				
+				bool should_cull = false;
 
-				bool has_neighbour = false;
-				int n_idx = -1;
-
-				if (nlx >= 0 && nlx < size_x && nly >= 0 && nly < size_y && nlz >= 0 && nlz < size_z) {
-					n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
-					if (n_idx != -1) {
-						has_neighbour = true;
+				// Fast bounds check
+				if ((unsigned)nlx < (unsigned)size_x && 
+				    (unsigned)nly < (unsigned)size_y && 
+				    (unsigned)nlz < (unsigned)size_z) {
+					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
+					
+					if (n_idx != -1 && voxel_cache[n_idx].valid) {
+						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
+						const int opp_dir = OPPOSITE_DIR[face_idx];
+						const int neigh_occupancy = face_occupancy_cache[n_cache.lookup_key * 6 + opp_dir];
+						const int sub_idx = face.face_occupancy + 1;
+						const int cont_idx = neigh_occupancy + 1;
+						
+						if (occupancy_fits_table[sub_idx * 19 + cont_idx]) {
+							should_cull = true;
+						}
 					}
 				}
-
-				if (has_neighbour) {
-					const VoxelData &n_props = unpacked_props[n_idx];
+				
+				// For shallow ramp END faces, also check diagonal neighbors (different Y level)
+				// SHALLOW_END_HIGH at y can match SHALLOW_END_LOW at y+1
+				// SHALLOW_END_LOW at y can match SHALLOW_END_HIGH at y-1
+				if (!should_cull && face_idx < 4) { // Only for horizontal faces (S/N/W/E)
+					int y_offset = 0;
+					int matching_occ = -1;
 					
-					if (n_props.shape_type >= 0 && n_props.shape_type < shape_database.size()) {
-						int n_vflip_index = n_props.vflip ? 1 : 0;
-						const ShapeVariant &neigh_shape = shape_database[n_props.shape_type][n_props.rot][n_vflip_index];
-						int opp_dir = OPPOSITE_DIR[face_idx];
-						if (opp_dir < neigh_shape.faces.size()) {
-							int neigh_occupancy = neigh_shape.faces[opp_dir].face_occupancy;
-							if (occupancy_fits(face.face_occupancy, neigh_occupancy)) {
-								continue; // Skip this face
+					if (face.face_occupancy == OCCUPANCY_SHALLOW_END_HIGH) {
+						y_offset = 1;  // Check tile above
+						matching_occ = OCCUPANCY_SHALLOW_END_LOW;
+					} else if (face.face_occupancy == OCCUPANCY_SHALLOW_END_LOW) {
+						y_offset = -1; // Check tile below
+						matching_occ = OCCUPANCY_SHALLOW_END_HIGH;
+					}
+					
+					if (y_offset != 0) {
+						const int diag_x = nlx;
+						const int diag_y = cache_entry.local_y + y_offset;
+						const int diag_z = nlz;
+						
+						if ((unsigned)diag_x < (unsigned)size_x && 
+						    (unsigned)diag_y < (unsigned)size_y && 
+						    (unsigned)diag_z < (unsigned)size_z) {
+							const int diag_idx = grid_cache[diag_x + diag_y * stride_y + diag_z * stride_z];
+							
+							if (diag_idx != -1 && voxel_cache[diag_idx].valid) {
+								const CachedVoxelInfo &diag_cache = voxel_cache[diag_idx];
+								const int opp_dir = OPPOSITE_DIR[face_idx];
+								const int diag_occupancy = face_occupancy_cache[diag_cache.lookup_key * 6 + opp_dir];
+								
+								if (diag_occupancy == matching_occ) {
+									should_cull = true;
+								}
 							}
 						}
 					}
 				}
+				
+				if (should_cull) {
+					continue; // Skip this face
+				}
 			}
 
-			// We are going to render this face, ensure vertices are ready
+			// Calculate wobbled vertices if needed (lazy evaluation)
 			if (!wobbled_calculated) {
 				cached_wobbled_local_verts.clear();
 				cached_vertex_colors.clear();
-				// Capacity is preserved, no need to reserve again if size is small
+				const size_t vert_count = shape_data.vertices.size();
+				cached_wobbled_local_verts.reserve(vert_count);
+				cached_vertex_colors.reserve(vert_count);
 
+				// OPTIMIZATION: Batch noise calculations with fast normalization
+				for (size_t i = 0; i < vert_count; i++) {
+					const Vector3 &base_local = shape_data.vertices[i];
+					
+					// Direct member access for world position
+					const Vector3 world_pos(
+						base_local.x + v_vec.x,
+						base_local.y + v_vec.y,
+						base_local.z + v_vec.z
+					);
 
-				for (const Vector3 &base_local : shape_data.vertices) {
-					Vector3 world_pos = base_local + v_vec;
+					// Noise calculations
+					const float nx = n1->get_noise_3dv(world_pos) * noise_scale;
+					const float ny = n2->get_noise_3dv(world_pos) * noise_scale;
+					const float nz = n3->get_noise_3dv(world_pos) * noise_scale;
 
-					float nx = n1->get_noise_3dv(world_pos) * 0.1f;
-					float ny = n2->get_noise_3dv(world_pos) * 0.1f;
-					float nz = n3->get_noise_3dv(world_pos) * 0.1f;
-
-					Vector3 wobbled_local = base_local + Vector3(nx, ny, nz);
+					// Wobbled vertex
+					const Vector3 wobbled_local(
+						base_local.x + nx,
+						base_local.y + ny,
+						base_local.z + nz
+					);
 					cached_wobbled_local_verts.push_back(wobbled_local);
 
-					Vector3 ns = (wobbled_local.normalized() + Vector3(1, 1, 1)) * 0.5f;
-					cached_vertex_colors.push_back(Color(ns.x, ns.y, ns.z));
+					// Fast normalized for color calculation using fast inverse sqrt
+					const float len_sq = wobbled_local.length_squared();
+					if (len_sq > norm_threshold) {
+						const float inv_len = fast_inv_sqrt(len_sq);
+						const float nsx = wobbled_local.x * inv_len;
+						const float nsy = wobbled_local.y * inv_len;
+						const float nsz = wobbled_local.z * inv_len;
+						cached_vertex_colors.push_back(Color(
+							(nsx + 1.0f) * half_scale,
+							(nsy + 1.0f) * half_scale,
+							(nsz + 1.0f) * half_scale
+						));
+					} else {
+						cached_vertex_colors.push_back(Color(default_color, default_color, default_color));
+					}
 				}
 				wobbled_calculated = true;
 			}
 
-			// UV Calculation
-			Vector2 uv_offset = (du * (float)props.tx) + (dv * (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset));
+			// UV Calculation - pre-compute once per face
+			const float uv_tile_y = (float)(FACE_UV_COLGROUP_SIZE * props.ty + face.tile_voffset);
+			const Vector2 uv_offset(
+				du.x * (float)props.tx + dv.x * uv_tile_y,
+				du.y * (float)props.tx + dv.y * uv_tile_y
+			);
 			
-			std::vector<Vector2> *uv_ptr = nullptr;
+			const std::vector<Vector2> *uv_ptr = nullptr;
 			if (face.uv_pattern_index >= 0 && face.uv_pattern_index < (int)uv_patterns.size()) {
 				uv_ptr = &uv_patterns[face.uv_pattern_index];
 			}
 
 			// Triangulate
-			for (size_t tri_start = 0; tri_start < face.indices.size(); tri_start += 3) {
-				// OPTIMIZATION: Push integers directly instead of allocating Arrays
+			for (size_t tri_start = 0; tri_start < indices_size; tri_start += 3) {
+				// Store triangle info
 				tri_voxel_info.push_back(voxel_index);
 				tri_voxel_info.push_back((int)face_idx);
 
-				int i0 = face.indices[tri_start + 0];
-				int i1 = face.indices[tri_start + 1];
-				int i2 = face.indices[tri_start + 2];
+				const int i0 = face.indices[tri_start + 0];
+				const int i1 = face.indices[tri_start + 1];
+				const int i2 = face.indices[tri_start + 2];
 
-				Vector3 v0_local = cached_wobbled_local_verts[i0];
-				Vector3 v1_local = cached_wobbled_local_verts[i1];
-				Vector3 v2_local = cached_wobbled_local_verts[i2];
+				// Get vertices (references to avoid copies)
+				const Vector3 &v0_local = cached_wobbled_local_verts[i0];
+				const Vector3 &v1_local = cached_wobbled_local_verts[i1];
+				const Vector3 &v2_local = cached_wobbled_local_verts[i2];
 
+				// Simple scalar addition - SIMD overhead isn't worth it for 3 vectors
 				final_vertices.push_back(v0_local + v_vec);
 				final_vertices.push_back(v1_local + v_vec);
 				final_vertices.push_back(v2_local + v_vec);
 
+				// Vertex colors (already computed)
 				final_normals_smoothed.push_back(cached_vertex_colors[i0]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i1]);
 				final_normals_smoothed.push_back(cached_vertex_colors[i2]);
 
-				// Face Normal
-				Vector3 edge1 = v1_local - v0_local;
-				Vector3 edge2 = v2_local - v0_local;
-				Vector3 face_norm = -edge1.cross(edge2).normalized();
-
+				// Face Normal - simple scalar cross product
+				float cross_x, cross_y, cross_z;
+				cross_product_normalized(
+					v0_local.x, v0_local.y, v0_local.z,
+					v1_local.x, v1_local.y, v1_local.z,
+					v2_local.x, v2_local.y, v2_local.z,
+					cross_x, cross_y, cross_z,
+					norm_threshold
+				);
+				
+				const Vector3 face_norm(cross_x, cross_y, cross_z);
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 				final_normals.push_back(face_norm);
 
+				// UV coordinates - simple scalar addition
 				if (uv_ptr && (tri_start + 2 < uv_ptr->size())) {
-					final_uvs.push_back((*uv_ptr)[tri_start + 0] + uv_offset);
-					final_uvs.push_back((*uv_ptr)[tri_start + 1] + uv_offset);
-					final_uvs.push_back((*uv_ptr)[tri_start + 2] + uv_offset);
+					const Vector2 &uv0 = (*uv_ptr)[tri_start + 0];
+					const Vector2 &uv1 = (*uv_ptr)[tri_start + 1];
+					const Vector2 &uv2 = (*uv_ptr)[tri_start + 2];
+					
+					final_uvs.push_back(uv0 + uv_offset);
+					final_uvs.push_back(uv1 + uv_offset);
+					final_uvs.push_back(uv2 + uv_offset);
 				} else {
-					final_uvs.push_back(Vector2());
-					final_uvs.push_back(Vector2());
-					final_uvs.push_back(Vector2());
+					final_uvs.push_back(uv_offset);
+					final_uvs.push_back(uv_offset);
+					final_uvs.push_back(uv_offset);
 				}
 			}
 		}
 	}
 
-	// Bulk convert to PackedArrays
+	// Bulk convert to PackedArrays using memcpy for maximum speed
 	PackedVector3Array p_vertices;
 	p_vertices.resize(final_vertices.size());
 	if (!final_vertices.empty()) {
@@ -468,8 +726,10 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	mesh_arrays[Mesh::ARRAY_COLOR] = p_colors;
 	mesh_arrays[Mesh::ARRAY_TEX_UV] = p_uvs;
 
+	array_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, mesh_arrays);
+
 	Dictionary result;
-	result["mesh_arrays"] = mesh_arrays;
+	result["arraymesh"] = array_mesh;
 	result["tri_voxel_info"] = tri_voxel_info;
 	
 	return result;
