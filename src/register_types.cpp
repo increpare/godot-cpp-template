@@ -5,7 +5,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
-#include "oeuf_serializer.h"
+#include "example_class.h"
 #include "voxel_mesher.h"
 
 using namespace godot;

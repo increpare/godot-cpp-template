@@ -24,7 +24,10 @@ public:
 	OeufSerializer() = default;
 	~OeufSerializer() override = default;
 
+	void print_type(const Variant &p_variant) const;
+	void print_array(const TypedArray<Vector3i> &p_array) const;
+	PackedByteArray serialize_array(const TypedArray<Vector3i> &p_array) const;
 	PackedByteArray serialize_game_data(const Array &p_savedat) const;
 	Array deserialize_game_data(const PackedByteArray &p_buffer) const;
-
+	Ref<Mesh> create_cube_mesh() const;
 };

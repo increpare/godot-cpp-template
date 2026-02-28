@@ -9,6 +9,27 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="print_array" qualifiers="const">
+			<return type="void" />
+			<param index="0" name="array" type="Vector3i[]" />
+			<description>
+				Print the contents of a Vector3i array.
+			</description>
+		</method>
+		<method name="print_type" qualifiers="const">
+			<return type="void" />
+			<param index="0" name="variant" type="Variant" />
+			<description>
+				Print the type of the variant.
+			</description>
+		</method>
+		<method name="serialize_array" qualifiers="const">
+			<return type="PackedByteArray" />
+			<param index="0" name="array" type="Vector3i[]" />
+			<description>
+				Serialize a Vector3i array into a PackedByteArray.
+			</description>
+		</method>
 		<method name="serialize_game_data" qualifiers="const">
 			<return type="PackedByteArray" />
 			<param index="0" name="savedat" type="Array" />
@@ -21,6 +42,12 @@
 			<param index="0" name="buffer" type="PackedByteArray" />
 			<description>
 				Deserialize a PackedByteArray back into the game data structure.
+			</description>
+		</method>
+		<method name="create_cube_mesh" qualifiers="const">
+			<return type="Mesh" />
+			<description>
+				Create and return a cube mesh with size 1x1x1.
 			</description>
 		</method>
 	</methods>
