@@ -323,8 +323,31 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const Array &voxel_properties,
 		const Array &layer_visibility,
 		int size_x, int size_y, int size_z) {
+	return generate_chunk_mesh_with_boundary(
+		chunk_coord,
+		voxels,
+		voxel_properties,
+		Array(),
+		Array(),
+		layer_visibility,
+		size_x,
+		size_y,
+		size_z
+	);
+}
+
+Dictionary VoxelMesher::generate_chunk_mesh_with_boundary(
+		const Vector3i &chunk_coord,
+		const Array &voxels,
+		const Array &voxel_properties,
+		const Array &boundary_voxels,
+		const Array &boundary_voxel_properties,
+		const Array &layer_visibility,
+		int size_x, int size_y, int size_z) {
 	
-	const int voxel_count = voxels.size();
+	const int core_voxel_count = voxels.size();
+	const int boundary_voxel_count = boundary_voxels.size();
+	const int total_voxel_count = core_voxel_count + boundary_voxel_count;
 
 	Ref<ArrayMesh> array_mesh;
 	array_mesh.instantiate();
@@ -333,7 +356,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	PackedInt32Array tri_voxel_info;
 
 	// Early exit for empty chunks
-	if (voxel_count == 0) {
+	if (core_voxel_count == 0) {
 		Dictionary result;
 		result["arraymesh"] = array_mesh;
 		result["tri_voxel_info"] = tri_voxel_info;
@@ -349,7 +372,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	tri_voxel_info.resize(0); 
 
 	// Reserve space if needed (only grows, never shrinks)
-	const int reserve_size = voxel_count * 32;
+	const int reserve_size = core_voxel_count * 32;
 	if (final_vertices.capacity() < reserve_size) {
 		final_vertices.reserve(reserve_size);
 		final_normals.reserve(reserve_size);
@@ -361,18 +384,34 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	unpacked_props.clear();
 	unpacked_voxels.clear();
 	
-	if (unpacked_props.capacity() < voxel_count) {
-		unpacked_props.reserve(voxel_count);
-		unpacked_voxels.reserve(voxel_count);
+	if (unpacked_props.capacity() < total_voxel_count) {
+		unpacked_props.reserve(total_voxel_count);
+		unpacked_voxels.reserve(total_voxel_count);
 	}
 
 	// OPTIMIZATION: Unpack data in a single pass with minimal allocations
-	for (int i = 0; i < voxel_count; i++) {
+	for (int i = 0; i < core_voxel_count; i++) {
 		unpacked_voxels.push_back(voxels[i]);
 
 		const Array &props = voxel_properties[i];
 		VoxelData vd;
 		// Direct access - assumes valid data structure
+		vd.shape_type = (int16_t)(int)props[0];
+		vd.tx = (int16_t)(int)props[1];
+		vd.ty = (int16_t)(int)props[2];
+		vd.rot = (int8_t)(int)props[3];
+		vd.vflip = (bool)props[4];
+		vd.layer = (int8_t)(int)props[5];
+		unpacked_props.push_back(vd);
+	}
+
+	// Include 1-voxel shell data from neighboring chunks for boundary culling.
+	// These voxels are used for occupancy checks only and are never meshed directly.
+	for (int i = 0; i < boundary_voxel_count; i++) {
+		unpacked_voxels.push_back(boundary_voxels[i]);
+
+		const Array &props = boundary_voxel_properties[i];
+		VoxelData vd;
 		vd.shape_type = (int16_t)(int)props[0];
 		vd.tx = (int16_t)(int)props[1];
 		vd.ty = (int16_t)(int)props[2];
@@ -392,33 +431,36 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		layers_vis.push_back(layer_visibility[i]);
 	}
 
-	// Grid Cache - resize only if dimensions changed (they're constant, so this happens once)
-	const int grid_size = size_x * size_y * size_z;
-	if (cached_size_x != size_x || cached_size_y != size_y || cached_size_z != size_z) {
+	// Grid cache includes a 1-voxel shell around the chunk for boundary neighbor lookups.
+	const int grid_x = size_x + 2;
+	const int grid_y = size_y + 2;
+	const int grid_z = size_z + 2;
+	const int grid_size = grid_x * grid_y * grid_z;
+	if (cached_size_x != grid_x || cached_size_y != grid_y || cached_size_z != grid_z) {
 		grid_cache.resize(grid_size);
-		cached_size_x = size_x;
-		cached_size_y = size_y;
-		cached_size_z = size_z;
+		cached_size_x = grid_x;
+		cached_size_y = grid_y;
+		cached_size_z = grid_z;
 	}
 	
 	// Clear grid cache (fill with -1)
 	std::fill(grid_cache.begin(), grid_cache.end(), -1);
 	
 	const Vector3i offset(chunk_coord.x * size_x, chunk_coord.y * size_y, chunk_coord.z * size_z);
-	const int stride_y = size_x;
-	const int stride_z = size_x * size_y;
+	const int stride_y = grid_x;
+	const int stride_z = grid_x * grid_y;
 
 	// Populate grid cache - optimized bounds checking with single comparison
-	for (int i = 0; i < voxel_count; i++) {
+	for (int i = 0; i < total_voxel_count; i++) {
 		const Vector3i &v = unpacked_voxels[i];
-		const int lx = v.x - offset.x;
-		const int ly = v.y - offset.y;
-		const int lz = v.z - offset.z;
+		const int lx = (v.x - offset.x) + 1;
+		const int ly = (v.y - offset.y) + 1;
+		const int lz = (v.z - offset.z) + 1;
 		
 		// Single bounds check using unsigned comparison trick
-		if ((unsigned)lx < (unsigned)size_x && 
-		    (unsigned)ly < (unsigned)size_y && 
-		    (unsigned)lz < (unsigned)size_z) {
+		if ((unsigned)lx < (unsigned)grid_x && 
+		    (unsigned)ly < (unsigned)grid_y && 
+		    (unsigned)lz < (unsigned)grid_z) {
 			grid_cache[lx + ly * stride_y + lz * stride_z] = i;
 		}
 	}
@@ -426,10 +468,10 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	// ALGORITHMIC OPTIMIZATION: Pre-cache shape variant pointers to avoid repeated lookups
 	// Reuse member buffer
 	voxel_cache.clear();
-	voxel_cache.resize(voxel_count);
+	voxel_cache.resize(total_voxel_count);
 	
 	// Pre-cache all shape variants (one-time cost, eliminates repeated 3-level lookups)
-	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
+	for (int voxel_index = 0; voxel_index < total_voxel_count; voxel_index++) {
 		const VoxelData &props = unpacked_props[voxel_index];
 		CachedVoxelInfo &cache_entry = voxel_cache[voxel_index];
 		
@@ -458,7 +500,6 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		cache_entry.local_z = cache_entry.voxel_pos.z - offset.z;
 		cache_entry.valid = true;
 	}
-
 	// Temporary buffers - reuse member buffers (cleared per voxel)
 	cached_wobbled_local_verts.clear();
 	cached_vertex_colors.clear();
@@ -479,7 +520,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	const float default_color = 0.5f;
 
 	// Main voxel processing loop - single pass with lazy evaluation preserved
-	for (int voxel_index = 0; voxel_index < voxel_count; voxel_index++) {
+	for (int voxel_index = 0; voxel_index < core_voxel_count; voxel_index++) {
 		const CachedVoxelInfo &cache_entry = voxel_cache[voxel_index];
 		
 		// Skip invalid/invisible voxels
@@ -512,10 +553,13 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				bool should_cull = false;
 
 				// Fast bounds check
-				if ((unsigned)nlx < (unsigned)size_x && 
-				    (unsigned)nly < (unsigned)size_y && 
-				    (unsigned)nlz < (unsigned)size_z) {
-					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
+				const int gnlx = nlx + 1;
+				const int gnly = nly + 1;
+				const int gnlz = nlz + 1;
+				if ((unsigned)gnlx < (unsigned)grid_x && 
+				    (unsigned)gnly < (unsigned)grid_y && 
+				    (unsigned)gnlz < (unsigned)grid_z) {
+					const int n_idx = grid_cache[gnlx + gnly * stride_y + gnlz * stride_z];
 					
 					if (n_idx != -1 && voxel_cache[n_idx].valid) {
 						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
@@ -550,10 +594,13 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 						const int diag_y = cache_entry.local_y + y_offset;
 						const int diag_z = nlz;
 						
-						if ((unsigned)diag_x < (unsigned)size_x && 
-						    (unsigned)diag_y < (unsigned)size_y && 
-						    (unsigned)diag_z < (unsigned)size_z) {
-							const int diag_idx = grid_cache[diag_x + diag_y * stride_y + diag_z * stride_z];
+						const int gdiag_x = diag_x + 1;
+						const int gdiag_y = diag_y + 1;
+						const int gdiag_z = diag_z + 1;
+						if ((unsigned)gdiag_x < (unsigned)grid_x && 
+						    (unsigned)gdiag_y < (unsigned)grid_y && 
+						    (unsigned)gdiag_z < (unsigned)grid_z) {
+							const int diag_idx = grid_cache[gdiag_x + gdiag_y * stride_y + gdiag_z * stride_z];
 							
 							if (diag_idx != -1 && voxel_cache[diag_idx].valid) {
 								const CachedVoxelInfo &diag_cache = voxel_cache[diag_idx];
@@ -923,5 +970,6 @@ void VoxelMesher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_texture_dimensions", "width", "height"), &VoxelMesher::set_texture_dimensions);
 	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns"), &VoxelMesher::parse_shapes);
 	ClassDB::bind_method(D_METHOD("generate_chunk_mesh", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh);
+	ClassDB::bind_method(D_METHOD("generate_chunk_mesh_with_boundary", "chunk_coord", "voxels", "voxel_properties", "boundary_voxels", "boundary_voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh_with_boundary);
 	ClassDB::bind_method(D_METHOD("generate_simplified_mesh", "chunk_coord", "voxels", "size_x", "size_y", "size_z"), &VoxelMesher::generate_simplified_mesh);
 }
