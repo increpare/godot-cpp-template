@@ -135,16 +135,6 @@ public:
 		int size_x, int size_y, int size_z
 	);
 
-	Dictionary generate_chunk_mesh_with_boundary(
-		const Vector3i &chunk_coord,
-		const Array &voxels,
-		const Array &voxel_properties,
-		const Array &boundary_voxels,
-		const Array &boundary_voxel_properties,
-		const Array &layer_visibility,
-		int size_x, int size_y, int size_z
-	);
-
 	Ref<ArrayMesh> generate_simplified_mesh(
 		const Vector3i &chunk_coord,
 		const Array &voxels,

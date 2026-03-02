@@ -1,8 +1,3 @@
-# Use a local SCons cache so godot-cpp enables MD5 decider (needed for incremental builds).
-# Without this, binding regeneration can trigger full godot-cpp rebuilds every run.
-SCONS_CACHE := $(CURDIR)/.scons-cache
-export SCONS_CACHE
-
 BASE = scons $(EXTRA_ARGS)
 LINUX = $(BASE) platform=linux
 WINDOWS = $(BASE) platform=windows
@@ -65,9 +60,6 @@ macos: SConstruct
 	$(MACOS) target=template_debug
 	$(MACOS) target=template_release
 
-# See why SCons is rebuilding (run after a full build; second run should show "up to date" reasons).
-debug-macos:
-	scons --debug=explain platform=macos target=template_debug
 
 # Deploy built binaries to shared drive
 deploy:
