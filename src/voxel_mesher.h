@@ -7,7 +7,9 @@
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/object.hpp>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -140,6 +142,11 @@ public:
 		const Array &voxels,
 		int size_x, int size_y, int size_z
 	);
+
+	// State checksum for desync detection.
+	// chunks_dict: Dictionary[Vector3i -> VoxelChunk node] — iterates voxel_dict on each chunk in C++.
+	// layer_names: Array of String (layer names only, not visibility)
+	int64_t compute_voxel_checksum(const Dictionary &chunks_dict, const Array &layer_names);
 };
 
 } // namespace godot

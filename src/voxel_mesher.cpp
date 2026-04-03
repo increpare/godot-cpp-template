@@ -918,10 +918,78 @@ Ref<ArrayMesh> VoxelMesher::generate_simplified_mesh(
 	return mesh;
 }
 
+// --- State checksum for desync detection ---
+// FNV-1a inspired hash mixing, kept in positive 63-bit range to match GDScript's int.
+static inline int64_t hash_mix(int64_t current, int64_t value) {
+	current ^= value;
+	current = (current * INT64_C(1099511628211)) & INT64_C(0x7FFFFFFFFFFFFFFF);
+	return current;
+}
+
+int64_t VoxelMesher::compute_voxel_checksum(const Dictionary &chunks_dict, const Array &layer_names) {
+	// chunks_dict: Dictionary[Vector3i -> VoxelChunk node]
+	// Each VoxelChunk has a voxel_dict: Dictionary[Vector3i -> Array of props]
+
+	// Collect all voxels across all chunks into a flat sortable list.
+	struct VoxelEntry {
+		Vector3i pos;
+		Array props;  // Reference to the props array in voxel_dict
+	};
+	std::vector<VoxelEntry> entries;
+	entries.reserve(1024);
+
+	const Array chunk_keys = chunks_dict.keys();
+	const int chunk_count = chunk_keys.size();
+	for (int c = 0; c < chunk_count; c++) {
+		Object *chunk_obj = Object::cast_to<Object>(chunks_dict[chunk_keys[c]]);
+		if (!chunk_obj) continue;
+		const Dictionary voxel_dict = chunk_obj->get("voxel_dict");
+		const Array voxel_keys = voxel_dict.keys();
+		const int voxel_count = voxel_keys.size();
+		for (int v = 0; v < voxel_count; v++) {
+			VoxelEntry e;
+			e.pos = voxel_keys[v];
+			e.props = voxel_dict[voxel_keys[v]];
+			entries.push_back(e);
+		}
+	}
+
+	// Sort by (x, y, z) for deterministic order
+	std::sort(entries.begin(), entries.end(), [](const VoxelEntry &a, const VoxelEntry &b) {
+		if (a.pos.x != b.pos.x) return a.pos.x < b.pos.x;
+		if (a.pos.y != b.pos.y) return a.pos.y < b.pos.y;
+		return a.pos.z < b.pos.z;
+	});
+
+	int64_t h = 0;
+
+	for (const auto &entry : entries) {
+		h = hash_mix(h, entry.pos.x);
+		h = hash_mix(h, entry.pos.y);
+		h = hash_mix(h, entry.pos.z);
+		const int prop_count = entry.props.size();
+		for (int p = 0; p < prop_count; p++) {
+			h = hash_mix(h, (int64_t)(int)entry.props[p]);
+		}
+	}
+
+	// Hash layer names
+	const int layer_count = layer_names.size();
+	h = hash_mix(h, layer_count);
+	for (int i = 0; i < layer_count; i++) {
+		String name = layer_names[i];
+		h = hash_mix(h, name.hash());
+	}
+
+	return h;
+}
+
+
 void VoxelMesher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("initialize_noise", "seed"), &VoxelMesher::initialize_noise);
 	ClassDB::bind_method(D_METHOD("set_texture_dimensions", "width", "height"), &VoxelMesher::set_texture_dimensions);
 	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns"), &VoxelMesher::parse_shapes);
 	ClassDB::bind_method(D_METHOD("generate_chunk_mesh", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh);
 	ClassDB::bind_method(D_METHOD("generate_simplified_mesh", "chunk_coord", "voxels", "size_x", "size_y", "size_z"), &VoxelMesher::generate_simplified_mesh);
+	ClassDB::bind_method(D_METHOD("compute_voxel_checksum", "chunks_dict", "layer_names"), &VoxelMesher::compute_voxel_checksum);
 }
