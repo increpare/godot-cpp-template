@@ -221,6 +221,11 @@ struct TextWriter {
 		}
 	}
 
+	void put_u8(uint8_t p_value) {
+		// Human-readable levels are tokenized whitespace-separated; u8 fits in normal int formatting.
+		put_int((int64_t)p_value);
+	}
+
 	void put_float(double p_value) {
 		_put_space();
 		char buf[32];
@@ -309,6 +314,17 @@ struct TextReaderTokenized {
 
 		int64_t next_int() {
 			return next_token().to_int();
+		}
+
+		uint8_t next_u8() {
+			int64_t v = next_int();
+			if (v < 0) {
+				return 0;
+			}
+			if (v > 255) {
+				return 255;
+			}
+			return (uint8_t)v;
 		}
 
 		double next_float() {
@@ -460,6 +476,7 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 		String meta_str;
 		String asset_name_str;
 		int32_t dir_value = 0;
+		int32_t star_colour_idx = 0;
 		
 		if (entity.has("dir")) {
 			dir_value = entity["dir"];
@@ -479,6 +496,14 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 				flags |= 0x04; // bit 2: has non-empty asset_name
 			}
 		}
+
+		// bit 3: has star colour palette index (ROYGBIV)
+		if (entities_version >= 5) {
+			if (entity.has("colour") && ((Variant)entity["colour"]).get_type() == Variant::INT) {
+				star_colour_idx = entity["colour"];
+				flags |= 0x08;
+			}
+		}
 		
 		// Write flags byte, then conditional fields
 		writer.put_8(flags);
@@ -493,6 +518,11 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 
 		if ((flags & 0x04) != 0) {
 			writer.put_utf8_string(asset_name_str);
+		}
+
+		if ((flags & 0x08) != 0) {
+			// palette index (0..N-1)
+			writer.put_8(static_cast<uint8_t>(star_colour_idx));
 		}
 
 		if (entity_type == 3) {
@@ -626,6 +656,10 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 		if ((flags & 0x04) != 0) {
 			// Has non-empty asset_name
 			entity[StringName("asset_name")] = reader.get_utf8_string();
+		}
+
+		if ((flags & 0x08) != 0) {
+			entity[StringName("colour")] = (int32_t)reader.get_8();
 		}
 		
 		if (entity_type == 3) {
@@ -776,6 +810,7 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		String meta_str;
 		String asset_name_str;
 		int32_t dir_value = 0;
+		int32_t star_colour_idx = 0;
 		
 		if (entity.has("dir")) {
 			dir_value = entity["dir"];
@@ -789,11 +824,28 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 			asset_name_str = entity["asset_name"];
 			if (!asset_name_str.is_empty()) flags |= 0x04;
 		}
+		if (entities_version >= 5) {
+			if (entity.has("colour") && ((Variant)entity["colour"]).get_type() == Variant::INT) {
+				star_colour_idx = entity["colour"];
+				flags |= 0x08;
+			}
+		}
 		
 		writer.put_int(flags);
 		if (flags & 0x01) writer.put_int(dir_value + 1);
 		if (flags & 0x02) writer.put_string(meta_str);
 		if (flags & 0x04) writer.put_string(asset_name_str);
+		if (flags & 0x08) {
+			// Star palette index (ROYGBIV): 0..6 today, but keep wire as u8 for forward-compat.
+			int64_t idx = star_colour_idx;
+			if (idx < 0) {
+				idx = 0;
+			}
+			if (idx > 255) {
+				idx = 255;
+			}
+			writer.put_u8((uint8_t)idx);
+		}
 
 		if (entity_type == 3) {
 			Vector3i size_EDS = entity.has("size_EDS") ? (Vector3i)entity["size_EDS"] : Vector3i();
@@ -881,6 +933,9 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 			if (flags & 0x01) entity[StringName("dir")] = t.next_int() - 1;
 			if (flags & 0x02) entity[StringName("meta")] = t.next_token();
 			if (flags & 0x04) entity[StringName("asset_name")] = t.next_token();
+			if (flags & 0x08) {
+				entity[StringName("colour")] = (int32_t)t.next_u8();
+			}
 			
 			if (type == 3) {
 				entity[StringName("size_EDS")] = t.next_vector3i();
