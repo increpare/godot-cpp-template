@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/vector3i.hpp>
 
 #include <cstddef>
+#include <cstring>
 #include <cstdint>
 
 using namespace godot;
@@ -66,7 +67,7 @@ static inline uint64_t hash_variant(uint64_t seed, const Variant &v) {
 			double d = (double)v;
 			uint64_t bits;
 			static_assert(sizeof(double) == sizeof(uint64_t), "double must be 64-bit");
-			__builtin_memcpy(&bits, &d, sizeof(bits));
+			std::memcpy(&bits, &d, sizeof(bits));
 			return hash_u64(seed, bits);
 		}
 		default: {
@@ -84,7 +85,7 @@ static inline int64_t to_i63(uint64_t h) {
 int64_t VoxelChecksums::chunk_state_checksum(const Dictionary &voxel_dict) {
 	uint64_t voxel_acc = 0;
 	int64_t voxel_count = 0;
-
+      
 	const Array keys = voxel_dict.keys();
 	for (int i = 0; i < keys.size(); i++) {
 		const Variant key = keys[i];
@@ -98,8 +99,20 @@ int64_t VoxelChecksums::chunk_state_checksum(const Dictionary &voxel_dict) {
 
 		uint64_t vh = UINT64_C(0x9e3779b97f4a7c15);
 		vh = hash_vec3i(vh, pos);
-		for (int p = 0; p < props.size(); p++) {
-			vh = hash_variant(vh, props[p]);
+		// Hot-path specialization: voxel props are typically
+		// [blocktype, tx, ty, rot, vflip, layer].
+		if (props.size() == 6) {
+			// Casts are deterministic; avoid Variant type-switch per element.
+			vh = hash_i64(vh, (int64_t)(int)props[0]);
+			vh = hash_i64(vh, (int64_t)(int)props[1]);
+			vh = hash_i64(vh, (int64_t)(int)props[2]);
+			vh = hash_i64(vh, (int64_t)(int)props[3]);
+			vh = hash_u64(vh, (bool)props[4] ? 1 : 0);
+			vh = hash_i64(vh, (int64_t)(int)props[5]);
+		} else {
+			for (int p = 0; p < props.size(); p++) {
+				vh = hash_variant(vh, props[p]);
+			}
 		}
 
 		voxel_acc = (voxel_acc + (vh & MASK63)) & MASK63;
@@ -120,17 +133,18 @@ int64_t VoxelChecksums::entity_manager_checksum(const Array &entities) {
 		const Dictionary e = (ev.get_type() == Variant::DICTIONARY) ? (Dictionary)ev : Dictionary();
 
 		uint64_t eh = UINT64_C(0x243f6a8885a308d3);
-		eh = hash_variant(eh, e.get("type", 0));
-		eh = hash_variant(eh, e.get("position", Vector3i()));
-		eh = hash_variant(eh, e.get("dir", 0));
-		eh = hash_variant(eh, e.get("layer", 0));
-		eh = hash_variant(eh, e.get("name", String()));
-		eh = hash_variant(eh, e.get("asset_name", String()));
-		eh = hash_variant(eh, e.get("meta", String()));
-		eh = hash_variant(eh, e.get("animation", String()));
-		eh = hash_variant(eh, e.get("length", 0));
-		eh = hash_variant(eh, e.get("size_WUN", Vector3i()));
-		eh = hash_variant(eh, e.get("size_EDS", Vector3i()));
+		// Hot-path specialization: entity fields are expected to be stable types.
+		eh = hash_i64(eh, (int64_t)(int)e.get("type", 0));
+		eh = hash_vec3i(eh, (Vector3i)e.get("position", Vector3i()));
+		eh = hash_i64(eh, (int64_t)(int)e.get("dir", 0));
+		eh = hash_i64(eh, (int64_t)(int)e.get("layer", 0));
+		eh = hash_string(eh, (String)e.get("name", String()));
+		eh = hash_string(eh, (String)e.get("asset_name", String()));
+		eh = hash_string(eh, (String)e.get("meta", String()));
+		eh = hash_string(eh, (String)e.get("animation", String()));
+		eh = hash_i64(eh, (int64_t)(int)e.get("length", 0));
+		eh = hash_vec3i(eh, (Vector3i)e.get("size_WUN", Vector3i()));
+		eh = hash_vec3i(eh, (Vector3i)e.get("size_EDS", Vector3i()));
 
 		entity_acc = (entity_acc + (eh & MASK63)) & MASK63;
 	}
