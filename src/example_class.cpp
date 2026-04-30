@@ -190,6 +190,14 @@ struct TextWriter {
 	std::string s;
 	bool first_in_line = true;
 
+	static char *_append_int_chars(char *p_dst, int64_t p_value) {
+		auto [ptr, ec] = std::to_chars(p_dst, p_dst + 24, p_value);
+		if (ec != std::errc()) {
+			return p_dst;
+		}
+		return ptr;
+	}
+
 	void reserve(size_t p_size) {
 		s.reserve(p_size);
 	}
@@ -220,6 +228,35 @@ struct TextWriter {
 			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), p_value);
 			s.append(buf, ptr - buf);
 		}
+	}
+
+	void put_voxel_line(bool p_is_delta, const Vector3i &p_pos, int64_t p_blocktype, int64_t p_tx, int64_t p_ty, int64_t p_rot_vflip, int64_t p_extra) {
+		char buf[192];
+		char *p = buf;
+		// Format: vx <type> <x> <y> <z> <blocktype> <tx> <ty> <rot_vflip> <extra>\n
+		*p++ = 'v';
+		*p++ = 'x';
+		*p++ = ' ';
+		*p++ = p_is_delta ? '0' : '1';
+		*p++ = ' ';
+		p = _append_int_chars(p, p_pos.x);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_pos.y);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_pos.z);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_blocktype);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_tx);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_ty);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_rot_vflip);
+		*p++ = ' ';
+		p = _append_int_chars(p, p_extra);
+		*p++ = '\n';
+		s.append(buf, p - buf);
+		first_in_line = true;
 	}
 
 	void put_u8(uint8_t p_value) {
@@ -863,29 +900,21 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		Array voxel = voxel_data[i];
 		Vector3i v = voxel[0];
 		Vector3i delta = v - last_position;
-		
-		writer.put_tag("vx");
-		if (delta.x >= -128 && delta.x <= 127 && delta.y >= -128 && delta.y <= 127 && delta.z >= -128 && delta.z <= 127) {
-			writer.put_int(0); // type delta
-			writer.put_int(delta.x);
-			writer.put_int(delta.y);
-			writer.put_int(delta.z);
-		} else {
-			writer.put_int(1); // type absolute
-			writer.put_int(v.x);
-			writer.put_int(v.y);
-			writer.put_int(v.z);
-		}
+		const bool is_delta = (delta.x >= -128 && delta.x <= 127 && delta.y >= -128 && delta.y <= 127 && delta.z >= -128 && delta.z <= 127);
+		const Vector3i pos_to_write = is_delta ? delta : v;
 		last_position = v;
 
-		writer.put_int(voxel[1]); // blocktype
-		writer.put_int(voxel[2]); // tx
-		writer.put_int(voxel[3]); // ty
 		int rot = voxel[4];
 		int vflip = (bool)voxel[5] ? 1 : 0;
-		writer.put_int(rot + vflip * 4);
-		writer.put_int(voxel[6]); // extra
-		writer.end_line();
+		writer.put_voxel_line(
+			is_delta,
+			pos_to_write,
+			(int64_t)voxel[1], // blocktype
+			(int64_t)voxel[2], // tx
+			(int64_t)voxel[3], // ty
+			(int64_t)(rot + vflip * 4),
+			(int64_t)voxel[6] // extra
+		);
 	}
 
 	// layers
