@@ -1,6 +1,7 @@
 #include "example_class.h"
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <cstdio>
 #include <charconv>
 #include "godot_cpp/classes/marshalls.hpp"
@@ -354,6 +355,119 @@ struct TextReaderTokenized {
 	}
 };
 
+// Streaming tokenizer that avoids splitting the full text into line Strings.
+struct StreamingTextTokenizer {
+	CharString utf8;
+	const char *ptr = nullptr;
+	const char *end = nullptr;
+
+	explicit StreamingTextTokenizer(const String &p_text) {
+		utf8 = p_text.utf8();
+		ptr = utf8.get_data();
+		end = ptr + utf8.length();
+	}
+
+	bool has_more_tokens() {
+		skip_whitespace();
+		return ptr < end;
+	}
+
+	void skip_whitespace() {
+		while (ptr < end && static_cast<unsigned char>(*ptr) <= ' ') {
+			ptr++;
+		}
+	}
+
+	bool next_raw_token(std::string_view &r_token) {
+		skip_whitespace();
+		if (ptr >= end) {
+			r_token = std::string_view();
+			return false;
+		}
+		const char *start = ptr;
+		while (ptr < end && static_cast<unsigned char>(*ptr) > ' ') {
+			ptr++;
+		}
+		r_token = std::string_view(start, static_cast<size_t>(ptr - start));
+		return true;
+	}
+
+	int64_t next_int() {
+		std::string_view token;
+		if (!next_raw_token(token) || token.empty()) {
+			return 0;
+		}
+		int64_t value = 0;
+		auto [pos, ec] = std::from_chars(token.data(), token.data() + token.size(), value);
+		if (ec != std::errc() || pos != token.data() + token.size()) {
+			return String::utf8(token.data(), (int)token.size()).to_int();
+		}
+		return value;
+	}
+
+	double next_float() {
+		std::string_view token;
+		if (!next_raw_token(token) || token.empty()) {
+			return 0.0;
+		}
+		return String::utf8(token.data(), (int)token.size()).to_float();
+	}
+
+	Vector3i next_vector3i() {
+		int64_t x = next_int();
+		int64_t y = next_int();
+		int64_t z = next_int();
+		return Vector3i(x, y, z);
+	}
+
+	Vector3 next_vector3() {
+		double x = next_float();
+		double y = next_float();
+		double z = next_float();
+		return Vector3(x, y, z);
+	}
+
+	uint8_t next_u8() {
+		int64_t v = next_int();
+		if (v < 0) {
+			return 0;
+		}
+		if (v > 255) {
+			return 255;
+		}
+		return (uint8_t)v;
+	}
+
+	String next_token() {
+		skip_whitespace();
+		if (ptr >= end) {
+			return "";
+		}
+
+		if (*ptr == '"') {
+			ptr++;
+			const char *start = ptr;
+			while (ptr < end && *ptr != '"') {
+				if (*ptr == '\\' && ptr + 1 < end) {
+					ptr++;
+				}
+				ptr++;
+			}
+			String s = String::utf8(start, (int)(ptr - start)).c_unescape();
+			if (ptr < end && *ptr == '"') {
+				ptr++;
+			}
+			return s;
+		}
+
+		std::string_view token;
+		if (!next_raw_token(token)) {
+			return "";
+		}
+		return String::utf8(token.data(), (int)token.size());
+	}
+};
+
 PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) const {
 	if (p_savedat.size() != 5) {
 		ERR_PRINT(vformat("serialize_game_data: Invalid savedat array size (expected 5, got %d)", p_savedat.size()));
@@ -687,22 +801,39 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 }
 
 String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
+	static const StringName SN_VERSION("version");
+	static const StringName SN_VOXEL_DATA("voxel_data");
+	static const StringName SN_LAYERS("layers");
+	static const StringName SN_SELECTED_LAYER_IDX("selected_layer_idx");
+	static const StringName SN_ENTITIES("entities");
+	static const StringName SN_NAME("name");
+	static const StringName SN_VISIBLE("visible");
+	static const StringName SN_TYPE("type");
+	static const StringName SN_POSITION("position");
+	static const StringName SN_LAYER("layer");
+	static const StringName SN_DIR("dir");
+	static const StringName SN_META("meta");
+	static const StringName SN_ASSET_NAME("asset_name");
+	static const StringName SN_COLOUR("colour");
+	static const StringName SN_SIZE_EDS("size_EDS");
+	static const StringName SN_SIZE_WUN("size_WUN");
+
 	if (p_savedat.size() != 5) {
 		ERR_PRINT(vformat("serialize_to_string: Invalid savedat array size (expected 5, got %d)", p_savedat.size()));
 		return "";
 	}
 
 	Dictionary level_state_data = p_savedat[0];
-	Array voxel_data = level_state_data["voxel_data"];
-	Array layers = level_state_data["layers"];
+	Array voxel_data = level_state_data[SN_VOXEL_DATA];
+	Array layers = level_state_data[SN_LAYERS];
 	// entities - support both legacy (array) and versioned (dict with "version" + "entities")
 	Variant entities_slot = p_savedat[4];
 	int entities_version = 0;
 	Array entities;
 	if (entities_slot.get_type() == Variant::DICTIONARY) {
 		Dictionary d = entities_slot;
-		entities_version = d["version"];
-		entities = d["entities"];
+		entities_version = d[SN_VERSION];
+		entities = d[SN_ENTITIES];
 	} else {
 		entities = entities_slot;
 	}
@@ -719,7 +850,7 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 
 	// version
 	writer.put_tag("version");
-	writer.put_int(level_state_data["version"]);
+	writer.put_int(level_state_data[SN_VERSION]);
 	writer.end_line();
 
 	// voxel_data
@@ -764,14 +895,14 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	for (int i = 0; i < layers_count; i++) {
 		Dictionary layer = layers[i];
 		writer.put_tag("l");
-		writer.put_string(layer["name"]);
-		writer.put_int((bool)layer["visible"] ? 1 : 0);
+		writer.put_string(layer[SN_NAME]);
+		writer.put_int((bool)layer[SN_VISIBLE] ? 1 : 0);
 		writer.end_line();
 	}
 
 	// selected_layer_idx
 	writer.put_tag("selected");
-	writer.put_int(level_state_data["selected_layer_idx"]);
+	writer.put_int(level_state_data[SN_SELECTED_LAYER_IDX]);
 	writer.end_line();
 
 	// camera
@@ -798,13 +929,13 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	for (int i = 0; i < entities_count; i++) {
 		Dictionary entity = entities[i];
 		writer.put_tag("e");
-		writer.put_string(entity["name"]);
+		writer.put_string(entity[SN_NAME]);
 		
-		int32_t entity_type = entity["type"];
+		int32_t entity_type = entity[SN_TYPE];
 		writer.put_int(entity_type);
-		writer.put_vector3i(entity["position"]);
+		writer.put_vector3i(entity[SN_POSITION]);
 
-		writer.put_int(entity["layer"]);
+		writer.put_int(entity[SN_LAYER]);
 		
 		uint8_t flags = 0;
 		String meta_str;
@@ -812,21 +943,21 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		int32_t dir_value = 0;
 		int32_t star_colour_idx = 0;
 		
-		if (entity.has("dir")) {
-			dir_value = entity["dir"];
+		if (entity.has(SN_DIR)) {
+			dir_value = entity[SN_DIR];
 			flags |= 0x01;
 		}
-		if (entity.has("meta")) {
-			meta_str = entity["meta"];
+		if (entity.has(SN_META)) {
+			meta_str = entity[SN_META];
 			if (!meta_str.is_empty()) flags |= 0x02;
 		}
-		if (entity.has("asset_name")) {
-			asset_name_str = entity["asset_name"];
+		if (entity.has(SN_ASSET_NAME)) {
+			asset_name_str = entity[SN_ASSET_NAME];
 			if (!asset_name_str.is_empty()) flags |= 0x04;
 		}
 		if (entities_version >= 5) {
-			if (entity.has("colour") && ((Variant)entity["colour"]).get_type() == Variant::INT) {
-				star_colour_idx = entity["colour"];
+			if (entity.has(SN_COLOUR) && ((Variant)entity[SN_COLOUR]).get_type() == Variant::INT) {
+				star_colour_idx = entity[SN_COLOUR];
 				flags |= 0x08;
 			}
 		}
@@ -848,9 +979,9 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		}
 
 		if (entity_type == 3) {
-			Vector3i size_EDS = entity.has("size_EDS") ? (Vector3i)entity["size_EDS"] : Vector3i();
+			Vector3i size_EDS = entity.has(SN_SIZE_EDS) ? (Vector3i)entity[SN_SIZE_EDS] : Vector3i();
 			writer.put_vector3i(size_EDS);
-			Vector3i size_WUN = entity.has("size_WUN") ? (Vector3i)entity["size_WUN"] : Vector3i();
+			Vector3i size_WUN = entity.has(SN_SIZE_WUN) ? (Vector3i)entity[SN_SIZE_WUN] : Vector3i();
 			writer.put_vector3i(size_WUN);
 		}
 		writer.end_line();
@@ -860,13 +991,36 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 }
 
 Array OeufSerializer::deserialize_from_string(const godot::String &p_string) const {
-	TextReaderTokenized reader(p_string);
+	static const StringName SN_VERSION("version");
+	static const StringName SN_VOXEL_DATA("voxel_data");
+	static const StringName SN_LAYERS("layers");
+	static const StringName SN_SELECTED_LAYER_IDX("selected_layer_idx");
+	static const StringName SN_ENTITIES("entities");
+	static const StringName SN_NAME("name");
+	static const StringName SN_VISIBLE("visible");
+	static const StringName SN_TYPE("type");
+	static const StringName SN_POSITION("position");
+	static const StringName SN_LAYER("layer");
+	static const StringName SN_DIR("dir");
+	static const StringName SN_META("meta");
+	static const StringName SN_ASSET_NAME("asset_name");
+	static const StringName SN_COLOUR("colour");
+	static const StringName SN_SIZE_EDS("size_EDS");
+	static const StringName SN_SIZE_WUN("size_WUN");
+
+	StreamingTextTokenizer reader(p_string);
 	Array savedat;
 	Dictionary level_state_data;
 	TypedArray<Array> voxel_data;
 	Array layers;
 	TypedArray<Dictionary> entities;
 	int entities_version = 0;
+	int voxel_write_idx = 0;
+	int layer_write_idx = 0;
+	int entity_write_idx = 0;
+	bool voxel_presized = false;
+	bool layer_presized = false;
+	bool entity_presized = false;
 	
 	Vector3 camera_pos;
 	Vector3 camera_base_rotation;
@@ -874,83 +1028,126 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 	
 	Vector3i last_position = Vector3i(0, 0, 0);
 
-	while (reader.has_more_lines()) {
-		TextReaderTokenized::LineTokenizer t = reader.next_line();
-		String tag = t.next_token();
-		if (tag == "") continue;
+	while (reader.has_more_tokens()) {
+		std::string_view tag_sv;
+		if (!reader.next_raw_token(tag_sv) || tag_sv.empty()) {
+			continue;
+		}
 
-		if (tag == "version") {
-			level_state_data[StringName("version")] = t.next_int();
-		} else if (tag == "entities_version") {
-			entities_version = t.next_int();
-		} else if (tag == "entities") {
-			t.next_int(); // consume count (entities are parsed from "e" tags)
-		} else if (tag == "vx") {
-			Array voxel;
-			int type = t.next_int();
-			if (type == 0) {
-				last_position += t.next_vector3i();
-			} else {
-				last_position = t.next_vector3i();
+		if (tag_sv == "version") {
+			level_state_data[SN_VERSION] = reader.next_int();
+		} else if (tag_sv == "voxels") {
+			int expected_voxels = reader.next_int();
+			if (expected_voxels > 0) {
+				voxel_data.resize(expected_voxels);
+				voxel_presized = true;
 			}
-			voxel.append(last_position);
-			voxel.append(t.next_int()); // blocktype
-			voxel.append(t.next_int()); // tx
-			voxel.append(t.next_int()); // ty
-			int rot_vflip = t.next_int();
-			voxel.append(rot_vflip & 3);
-			voxel.append((rot_vflip & 4) != 0);
-			voxel.append(t.next_int()); // extra
-			voxel_data.append(voxel);
-		} else if (tag == "l") {
+		} else if (tag_sv == "entities_version") {
+			entities_version = reader.next_int();
+		} else if (tag_sv == "entities") {
+			int expected_entities = reader.next_int(); // entities are still parsed from "e" tags.
+			if (expected_entities > 0) {
+				entities.resize(expected_entities);
+				entity_presized = true;
+			}
+		} else if (tag_sv == "vx") {
+			Array voxel;
+			voxel.resize(7);
+			int type = reader.next_int();
+			if (type == 0) {
+				last_position += reader.next_vector3i();
+			} else {
+				last_position = reader.next_vector3i();
+			}
+			voxel[0] = last_position;
+			voxel[1] = reader.next_int(); // blocktype
+			voxel[2] = reader.next_int(); // tx
+			voxel[3] = reader.next_int(); // ty
+			int rot_vflip = reader.next_int();
+			voxel[4] = rot_vflip & 3;
+			voxel[5] = (rot_vflip & 4) != 0;
+			voxel[6] = reader.next_int(); // extra
+			if (voxel_presized && voxel_write_idx < voxel_data.size()) {
+				voxel_data.set(voxel_write_idx, voxel);
+				voxel_write_idx++;
+			} else {
+				voxel_data.append(voxel);
+			}
+		} else if (tag_sv == "l") {
 			Dictionary layer;
-			layer[StringName("name")] = t.next_token();
-			layer[StringName("visible")] = t.next_int() != 0;
-			layers.append(layer);
-		} else if (tag == "selected") {
-			level_state_data[StringName("selected_layer_idx")] = t.next_int();
-		} else if (tag == "cp") {
-			camera_pos = t.next_vector3();
-		} else if (tag == "cbr") {
-			camera_base_rotation = t.next_vector3();
-		} else if (tag == "crr") {
-			camera_rot_rotation = t.next_vector3();
-		} else if (tag == "e") {
+			layer[SN_NAME] = reader.next_token();
+			layer[SN_VISIBLE] = reader.next_int() != 0;
+			if (layer_presized && layer_write_idx < layers.size()) {
+				layers[layer_write_idx] = layer;
+				layer_write_idx++;
+			} else {
+				layers.append(layer);
+			}
+		} else if (tag_sv == "layers") {
+			int expected_layers = reader.next_int();
+			if (expected_layers > 0) {
+				layers.resize(expected_layers);
+				layer_presized = true;
+			}
+		} else if (tag_sv == "selected") {
+			level_state_data[SN_SELECTED_LAYER_IDX] = reader.next_int();
+		} else if (tag_sv == "cp") {
+			camera_pos = reader.next_vector3();
+		} else if (tag_sv == "cbr") {
+			camera_base_rotation = reader.next_vector3();
+		} else if (tag_sv == "crr") {
+			camera_rot_rotation = reader.next_vector3();
+		} else if (tag_sv == "e") {
 			Dictionary entity;
-			entity[StringName("name")] = t.next_token();
-			int type = t.next_int();
-			entity[StringName("type")] = type;
-			entity[StringName("position")] = t.next_vector3i();
+			entity[SN_NAME] = reader.next_token();
+			int type = reader.next_int();
+			entity[SN_TYPE] = type;
+			entity[SN_POSITION] = reader.next_vector3i();
 			
 			if (entities_version >= 3){
 				//entities have a layer
-				entity[StringName("layer")] = t.next_int();
+				entity[SN_LAYER] = reader.next_int();
 			} else {
-				entity[StringName("layer")] = 0;
+				entity[SN_LAYER] = 0;
 			}
 			
-			int flags = t.next_int();
-			if (flags & 0x01) entity[StringName("dir")] = t.next_int() - 1;
-			if (flags & 0x02) entity[StringName("meta")] = t.next_token();
-			if (flags & 0x04) entity[StringName("asset_name")] = t.next_token();
+			int flags = reader.next_int();
+			if (flags & 0x01) entity[SN_DIR] = reader.next_int() - 1;
+			if (flags & 0x02) entity[SN_META] = reader.next_token();
+			if (flags & 0x04) entity[SN_ASSET_NAME] = reader.next_token();
 			if (flags & 0x08) {
-				entity[StringName("colour")] = (int32_t)t.next_u8();
+				entity[SN_COLOUR] = (int32_t)reader.next_u8();
 			}
 			
 			if (type == 3) {
-				entity[StringName("size_EDS")] = t.next_vector3i();
-				entity[StringName("size_WUN")] = t.next_vector3i();
+				entity[SN_SIZE_EDS] = reader.next_vector3i();
+				entity[SN_SIZE_WUN] = reader.next_vector3i();
 			}
-			entities.append(entity);
+			if (entity_presized && entity_write_idx < entities.size()) {
+				entities.set(entity_write_idx, entity);
+				entity_write_idx++;
+			} else {
+				entities.append(entity);
+			}
 		}
 	}
 
-	level_state_data[StringName("voxel_data")] = voxel_data;
-	level_state_data[StringName("layers")] = layers;
+	if (voxel_presized && voxel_write_idx < voxel_data.size()) {
+		voxel_data.resize(voxel_write_idx);
+	}
+	if (layer_presized && layer_write_idx < layers.size()) {
+		layers.resize(layer_write_idx);
+	}
+	if (entity_presized && entity_write_idx < entities.size()) {
+		entities.resize(entity_write_idx);
+	}
+
+	level_state_data[SN_VOXEL_DATA] = voxel_data;
+	level_state_data[SN_LAYERS] = layers;
 	
 	Dictionary entities_dict;
-	entities_dict[StringName("version")] = entities_version;
-	entities_dict[StringName("entities")] = entities;
+	entities_dict[SN_VERSION] = entities_version;
+	entities_dict[SN_ENTITIES] = entities;
 	
 	savedat.append(level_state_data);
 	savedat.append(camera_pos);
