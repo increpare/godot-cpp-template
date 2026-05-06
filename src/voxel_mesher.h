@@ -32,7 +32,7 @@ private:
 		bool occupy_face;
 		int face_occupancy;
 		bool self_cullable;
-		std::array<std::vector<int>, FACE_CULL_ACTION_COUNT> partial_indices_by_action;
+		std::array<std::vector<int>, FACE_CULL_ACTION_COUNT> draw_indices_by_action;
 	};
 
 	struct ShapeVariant {
