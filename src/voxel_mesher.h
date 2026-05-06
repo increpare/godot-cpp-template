@@ -7,9 +7,11 @@
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/object.hpp>
+#include <array>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -21,12 +23,16 @@ class VoxelMesher : public RefCounted {
 	GDCLASS(VoxelMesher, RefCounted)
 
 private:
+	static constexpr int FACE_CULL_ACTION_COUNT = 6;
+
 	struct FaceData {
 		std::vector<int> indices;
 		int uv_pattern_index;
 		int tile_voffset;
 		bool occupy_face;
-		int face_occupancy; // Enum value
+		int face_occupancy;
+		bool self_cullable;
+		std::array<std::vector<int>, FACE_CULL_ACTION_COUNT> partial_indices_by_action;
 	};
 
 	struct ShapeVariant {
@@ -46,14 +52,14 @@ private:
 	
 	// Pre-computed face occupancies: flattened array [key * 6 + face_dir] = occupancy value
 	// Eliminates repeated shape->faces[dir]->face_occupancy indirection in neighbor checks
-	// 256 shape variants × 6 faces = 1536 bytes - flattened for better cache locality
-	int8_t face_occupancy_cache[256 * 6];
+	// 256 shape variants x 6 faces - flattened for better cache locality
+	int16_t face_occupancy_cache[256 * 6];
+	bool face_self_cullable_cache[256 * 6];
 
-	// Pre-computed occupancy_fits lookup table: flattened array [subject * 15 + container] -> bool
-	// Occupancy values: EMPTY=-1, TRI0-3=0-3, QUAD=4, OCTAGON=5, SLIM=6, SHALLOW_END_*=7-9, SHALLOW_SIDE_*=10-17
-	// Maps to indices by adding 1: EMPTY->0, 0->1, 1->2, ..., 17->18
-	// 19×19 = 361 bytes - flattened for better cache locality
-	bool occupancy_fits_table[19 * 19];
+	// Pre-computed face cull actions: flattened array [subject_id + 1][neighbor_id + 1] -> action byte.
+	// EMPTY maps to 0; generated stable occupancy ids map to id + 1.
+	std::vector<uint8_t> occupancy_action_table;
+	int occupancy_action_table_size = 0;
 
 	// uv_patterns[index] -> vector of Vector2
 	std::vector<std::vector<Vector2>> uv_patterns;
@@ -126,7 +132,7 @@ public:
 
 	void initialize_noise(int seed);
 	void set_texture_dimensions(float width, float height);
-	void parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns);
+	void parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns, const PackedByteArray &gd_cull_actions, int gd_cull_action_size);
 
 	// Returns a Dictionary containing arrays for ArrayMesh (vertices, normals, uvs, etc.)
 	Dictionary generate_chunk_mesh(
@@ -152,4 +158,3 @@ public:
 } // namespace godot
 
 #endif // VOXEL_MESHER_H
-

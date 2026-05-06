@@ -11,51 +11,12 @@
 
 using namespace godot;
 
-// Enum from Shapes.gd
-enum FaceOccupancy {
-	OCCUPANCY_EMPTY = -1,
-	OCCUPANCY_TRI0 = 0,
-	OCCUPANCY_TRI1 = 1,
-	OCCUPANCY_TRI2 = 2,
-	OCCUPANCY_TRI3 = 3,
-	OCCUPANCY_QUAD = 4,
-	OCCUPANCY_OCTAGON = 5,
-	OCCUPANCY_SLIM = 6,
-	// Shallow ramp end pieces - rectangles at different heights
-	OCCUPANCY_SHALLOW_END_LOW = 7,
-	OCCUPANCY_SHALLOW_END_MED = 8,
-	OCCUPANCY_SHALLOW_END_HIGH = 9,
-	// Shallow ramp side pieces - trapezoids encoded by SLOPE DIRECTION
-	// Two sides cull only if same height AND same slope direction (same value)
-	OCCUPANCY_SHALLOW_SIDE_LOW_N = 10,  // LOW trapezoid, slopes toward N
-	OCCUPANCY_SHALLOW_SIDE_LOW_S = 11,  // LOW trapezoid, slopes toward S
-	OCCUPANCY_SHALLOW_SIDE_LOW_E = 12,  // LOW trapezoid, slopes toward E
-	OCCUPANCY_SHALLOW_SIDE_LOW_W = 13,  // LOW trapezoid, slopes toward W
-	OCCUPANCY_SHALLOW_SIDE_HIGH_N = 14, // HIGH trapezoid, slopes toward N
-	OCCUPANCY_SHALLOW_SIDE_HIGH_S = 15, // HIGH trapezoid, slopes toward S
-	OCCUPANCY_SHALLOW_SIDE_HIGH_E = 16, // HIGH trapezoid, slopes toward E
-	OCCUPANCY_SHALLOW_SIDE_HIGH_W = 17, // HIGH trapezoid, slopes toward W
-	OCCUPANCY_MAX = 18  // For array sizing
-};
+static constexpr int OCCUPANCY_EMPTY = -1;
+static constexpr uint8_t FACE_CULL_DRAW = 0;
+static constexpr uint8_t FACE_CULL_FULL = 1;
 
-// Ported from Shapes.gd - optimized with early returns
-static inline bool occupancy_fits(int subject, int container) {
-	// Early exit for common cases
-	if (subject == OCCUPANCY_EMPTY) {
-		return true;
-	}
-	if (container == OCCUPANCY_EMPTY) {
-		return false;
-	}
-	if (subject == container) {
-		return true;
-	}
-	// QUAD can contain triangles and quads
-	if (container == OCCUPANCY_QUAD) {
-		return (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
-	}
-	// For triangles, they must match exactly
-	return false;
+static inline int occupancy_table_index(int id) {
+	return id == OCCUPANCY_EMPTY ? 0 : id + 1;
 }
 
 static const Vector3i DIR_OFFSETS[6] = {
@@ -117,14 +78,21 @@ void VoxelMesher::set_texture_dimensions(float width, float height) {
 	dv = Vector2(0, tile_h_local);
 }
 
-void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns) {
+void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv_patterns, const PackedByteArray &gd_cull_actions, int gd_cull_action_size) {
+	occupancy_action_table_size = gd_cull_action_size;
+	occupancy_action_table.clear();
+	occupancy_action_table.resize(gd_cull_actions.size());
+	for (int i = 0; i < gd_cull_actions.size(); i++) {
+		occupancy_action_table[i] = (uint8_t)gd_cull_actions[i];
+	}
+
 	// Clear direct array lookup - initialize all entries as invalid
 	for (int i = 0; i < 256; i++) {
 		shape_lookup_valid[i] = false;
 		shape_lookup_array[i] = nullptr;
-		// Initialize face occupancies to EMPTY for safety (flattened indexing)
 		for (int face_dir = 0; face_dir < 6; face_dir++) {
 			face_occupancy_cache[i * 6 + face_dir] = OCCUPANCY_EMPTY;
+			face_self_cullable_cache[i * 6 + face_dir] = false;
 		}
 	}
 	
@@ -172,7 +140,9 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				Array uvs = shape_dict["uvs"];
 				Array voffsets = shape_dict["face_tile_voffset"];
 				Array occupyface = shape_dict["occupyface"];
-				Array face_occupancy = shape_dict["face_occupancy"];
+				Array face_occupancy = shape_dict["face_occupancy_id"];
+				Array face_self_cullable = shape_dict["face_self_cullable"];
+				Array face_partial_indices = shape_dict["face_partial_indices"];
 
 				sv.faces.clear();
 				for (int face_idx = 0; face_idx < faces.size(); face_idx++) {
@@ -196,6 +166,21 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 					fd.tile_voffset = voffsets[face_idx];
 					fd.occupy_face = occupyface[face_idx];
 					fd.face_occupancy = face_occupancy[face_idx];
+					fd.self_cullable = face_self_cullable[face_idx];
+
+					Array partial_by_action = face_partial_indices[face_idx];
+					for (int action = 0; action < FACE_CULL_ACTION_COUNT; action++) {
+						std::vector<int> &values = fd.partial_indices_by_action[action];
+						values.clear();
+						if (action >= partial_by_action.size()) {
+							continue;
+						}
+						Array partial = partial_by_action[action];
+						values.reserve(partial.size());
+						for (int pi = 0; pi < partial.size(); pi++) {
+							values.push_back(partial[pi]);
+						}
+					}
 
 					sv.faces.push_back(fd);
 				}
@@ -208,40 +193,14 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				const size_t face_count = sv.faces.size();
 				for (int face_dir = 0; face_dir < 6; face_dir++) {
 					if (face_dir < (int)face_count) {
-						face_occupancy_cache[key * 6 + face_dir] = (int8_t)sv.faces[face_dir].face_occupancy;
+						face_occupancy_cache[key * 6 + face_dir] = (int16_t)sv.faces[face_dir].face_occupancy;
+						face_self_cullable_cache[key * 6 + face_dir] = sv.faces[face_dir].self_cullable;
 					} else {
 						face_occupancy_cache[key * 6 + face_dir] = OCCUPANCY_EMPTY;
+						face_self_cullable_cache[key * 6 + face_dir] = false;
 					}
 				}
 			}
-		}
-	}
-	
-	// Pre-compute occupancy_fits lookup table - eliminates function call overhead
-	// Map occupancy values (-1 to 17) to indices (0 to 18) by adding 1
-	// occupancy_fits_table[subject+1][container+1] = true if subject fits in container
-	for (int subject = -1; subject <= 17; subject++) {
-		for (int container = -1; container <= 17; container++) {
-			int sub_idx = subject + 1;
-			int cont_idx = container + 1;
-			
-			bool fits = false;
-			if (subject == OCCUPANCY_EMPTY) {
-				fits = true;
-			} else if (container == OCCUPANCY_EMPTY) {
-				fits = false;
-			} else if (subject == container) {
-				fits = true;
-			} else if (container == OCCUPANCY_QUAD) {
-				fits = (subject >= OCCUPANCY_TRI0 && subject <= OCCUPANCY_QUAD);
-			} else {
-				// For all other occupancies (including shallow ramp sides):
-				// Same value = same geometry = can cull
-				// Different values = different geometry = cannot cull
-				fits = (subject == container);
-			}
-			
-			occupancy_fits_table[sub_idx * 19 + cont_idx] = fits;
 		}
 	}
 }
@@ -499,17 +458,15 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		const size_t face_count = shape_data.faces.size();
 		for (size_t face_idx = 0; face_idx < face_count; face_idx++) {
 			const FaceData &face = shape_data.faces[face_idx];
-			const size_t indices_size = face.indices.size();
-			if (indices_size == 0) continue;
+			if (face.indices.empty()) continue;
 
 			// Neighbor check - optimized with early exits and cached shape access
-			if (face.occupy_face && face.face_occupancy != OCCUPANCY_EMPTY) {
+			uint8_t cull_action = FACE_CULL_DRAW;
+			if (face.self_cullable && face.face_occupancy != OCCUPANCY_EMPTY) {
 				const Vector3i &dir_offset = DIR_OFFSETS[face_idx];
 				const int nlx = cache_entry.local_x + dir_offset.x;
 				const int nly = cache_entry.local_y + dir_offset.y;
 				const int nlz = cache_entry.local_z + dir_offset.z;
-				
-				bool should_cull = false;
 
 				// Fast bounds check
 				if ((unsigned)nlx < (unsigned)size_x && 
@@ -521,55 +478,29 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
 						const int opp_dir = OPPOSITE_DIR[face_idx];
 						const int neigh_occupancy = face_occupancy_cache[n_cache.lookup_key * 6 + opp_dir];
-						const int sub_idx = face.face_occupancy + 1;
-						const int cont_idx = neigh_occupancy + 1;
+						const int sub_idx = occupancy_table_index(face.face_occupancy);
+						const int cont_idx = occupancy_table_index(neigh_occupancy);
 						
-						if (occupancy_fits_table[sub_idx * 19 + cont_idx]) {
-							should_cull = true;
-						}
-					}
-				}
-				
-				// For shallow ramp END faces, also check diagonal neighbors (different Y level)
-				// SHALLOW_END_HIGH at y can match SHALLOW_END_LOW at y+1
-				// SHALLOW_END_LOW at y can match SHALLOW_END_HIGH at y-1
-				if (!should_cull && face_idx < 4) { // Only for horizontal faces (S/N/W/E)
-					int y_offset = 0;
-					int matching_occ = -1;
-					
-					if (face.face_occupancy == OCCUPANCY_SHALLOW_END_HIGH) {
-						y_offset = 1;  // Check tile above
-						matching_occ = OCCUPANCY_SHALLOW_END_LOW;
-					} else if (face.face_occupancy == OCCUPANCY_SHALLOW_END_LOW) {
-						y_offset = -1; // Check tile below
-						matching_occ = OCCUPANCY_SHALLOW_END_HIGH;
-					}
-					
-					if (y_offset != 0) {
-						const int diag_x = nlx;
-						const int diag_y = cache_entry.local_y + y_offset;
-						const int diag_z = nlz;
-						
-						if ((unsigned)diag_x < (unsigned)size_x && 
-						    (unsigned)diag_y < (unsigned)size_y && 
-						    (unsigned)diag_z < (unsigned)size_z) {
-							const int diag_idx = grid_cache[diag_x + diag_y * stride_y + diag_z * stride_z];
-							
-							if (diag_idx != -1 && voxel_cache[diag_idx].valid) {
-								const CachedVoxelInfo &diag_cache = voxel_cache[diag_idx];
-								const int opp_dir = OPPOSITE_DIR[face_idx];
-								const int diag_occupancy = face_occupancy_cache[diag_cache.lookup_key * 6 + opp_dir];
-								
-								if (diag_occupancy == matching_occ) {
-									should_cull = true;
-								}
+						if (sub_idx >= 0 && cont_idx >= 0 &&
+								sub_idx < occupancy_action_table_size &&
+								cont_idx < occupancy_action_table_size) {
+							const int table_idx = sub_idx * occupancy_action_table_size + cont_idx;
+							if (table_idx >= 0 && table_idx < (int)occupancy_action_table.size()) {
+								cull_action = occupancy_action_table[table_idx];
 							}
 						}
 					}
 				}
-				
-				if (should_cull) {
-					continue; // Skip this face
+			}
+			if (cull_action == FACE_CULL_FULL) {
+				continue;
+			}
+
+			const std::vector<int> *partial_face_positions = nullptr;
+			if (cull_action < FACE_CULL_ACTION_COUNT) {
+				const std::vector<int> &candidate = face.partial_indices_by_action[cull_action];
+				if (!candidate.empty()) {
+					partial_face_positions = &candidate;
 				}
 			}
 
@@ -637,14 +568,19 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			}
 
 			// Triangulate
+			const size_t indices_size = partial_face_positions ? partial_face_positions->size() : face.indices.size();
 			for (size_t tri_start = 0; tri_start < indices_size; tri_start += 3) {
 				// Store triangle info
 				tri_voxel_info.push_back(voxel_index);
 				tri_voxel_info.push_back((int)face_idx);
 
-				const int i0 = face.indices[tri_start + 0];
-				const int i1 = face.indices[tri_start + 1];
-				const int i2 = face.indices[tri_start + 2];
+				const int face_pos0 = partial_face_positions ? (*partial_face_positions)[tri_start + 0] : (int)tri_start + 0;
+				const int face_pos1 = partial_face_positions ? (*partial_face_positions)[tri_start + 1] : (int)tri_start + 1;
+				const int face_pos2 = partial_face_positions ? (*partial_face_positions)[tri_start + 2] : (int)tri_start + 2;
+
+				const int i0 = face.indices[face_pos0];
+				const int i1 = face.indices[face_pos1];
+				const int i2 = face.indices[face_pos2];
 
 				// Get vertices (references to avoid copies)
 				const Vector3 &v0_local = cached_wobbled_local_verts[i0];
@@ -677,10 +613,13 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				final_normals.push_back(face_norm);
 
 				// UV coordinates - simple scalar addition
-				if (uv_ptr && (tri_start + 2 < uv_ptr->size())) {
-					const Vector2 &uv0 = (*uv_ptr)[tri_start + 0];
-					const Vector2 &uv1 = (*uv_ptr)[tri_start + 1];
-					const Vector2 &uv2 = (*uv_ptr)[tri_start + 2];
+				if (uv_ptr &&
+						face_pos0 >= 0 && face_pos0 < (int)uv_ptr->size() &&
+						face_pos1 >= 0 && face_pos1 < (int)uv_ptr->size() &&
+						face_pos2 >= 0 && face_pos2 < (int)uv_ptr->size()) {
+					const Vector2 &uv0 = (*uv_ptr)[face_pos0];
+					const Vector2 &uv1 = (*uv_ptr)[face_pos1];
+					const Vector2 &uv2 = (*uv_ptr)[face_pos2];
 					
 					final_uvs.push_back(uv0 + uv_offset);
 					final_uvs.push_back(uv1 + uv_offset);
@@ -988,7 +927,7 @@ int64_t VoxelMesher::compute_voxel_checksum(const Dictionary &chunks_dict, const
 void VoxelMesher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("initialize_noise", "seed"), &VoxelMesher::initialize_noise);
 	ClassDB::bind_method(D_METHOD("set_texture_dimensions", "width", "height"), &VoxelMesher::set_texture_dimensions);
-	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns"), &VoxelMesher::parse_shapes);
+	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns", "gd_cull_actions", "gd_cull_action_size"), &VoxelMesher::parse_shapes);
 	ClassDB::bind_method(D_METHOD("generate_chunk_mesh", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh);
 	ClassDB::bind_method(D_METHOD("generate_simplified_mesh", "chunk_coord", "voxels", "size_x", "size_y", "size_z"), &VoxelMesher::generate_simplified_mesh);
 	ClassDB::bind_method(D_METHOD("compute_voxel_checksum", "chunks_dict", "layer_names"), &VoxelMesher::compute_voxel_checksum);
