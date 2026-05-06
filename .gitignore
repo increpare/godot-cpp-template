@@ -61,3 +61,4 @@ compile_commands.json
 cmake-build*
 CMakeUserPresets.json
 /.scons-cache
+/.worktrees
