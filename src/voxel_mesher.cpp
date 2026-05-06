@@ -142,7 +142,7 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				Array occupyface = shape_dict["occupyface"];
 				Array face_occupancy = shape_dict["face_occupancy_id"];
 				Array face_self_cullable = shape_dict["face_self_cullable"];
-				Array face_partial_indices = shape_dict["face_partial_indices"];
+				Array face_draw_positions_by_action = shape_dict["face_draw_positions_by_action"];
 
 				sv.faces.clear();
 				for (int face_idx = 0; face_idx < faces.size(); face_idx++) {
@@ -168,17 +168,17 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 					fd.face_occupancy = face_occupancy[face_idx];
 					fd.self_cullable = face_self_cullable[face_idx];
 
-					Array partial_by_action = face_partial_indices[face_idx];
+					Array draw_by_action = face_draw_positions_by_action[face_idx];
 					for (int action = 0; action < FACE_CULL_ACTION_COUNT; action++) {
-						std::vector<int> &values = fd.partial_indices_by_action[action];
+						std::vector<int> &values = fd.draw_indices_by_action[action];
 						values.clear();
-						if (action >= partial_by_action.size()) {
+						if (action >= draw_by_action.size()) {
 							continue;
 						}
-						Array partial = partial_by_action[action];
-						values.reserve(partial.size());
-						for (int pi = 0; pi < partial.size(); pi++) {
-							values.push_back(partial[pi]);
+						Array draw_positions = draw_by_action[action];
+						values.reserve(draw_positions.size());
+						for (int pi = 0; pi < draw_positions.size(); pi++) {
+							values.push_back(draw_positions[pi]);
 						}
 					}
 
@@ -493,16 +493,14 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				}
 			}
 			if (cull_action == FACE_CULL_FULL) {
-				continue;
+				// FACE_CULL_FULL can still draw triangles that are editor-attributed
+				// to this side but do not actually lie on the side plane.
 			}
-
-			const std::vector<int> *partial_face_positions = nullptr;
-			if (cull_action < FACE_CULL_ACTION_COUNT) {
-				const std::vector<int> &candidate = face.partial_indices_by_action[cull_action];
-				if (!candidate.empty()) {
-					partial_face_positions = &candidate;
-				}
+			if (cull_action >= FACE_CULL_ACTION_COUNT) {
+				cull_action = FACE_CULL_DRAW;
 			}
+			const std::vector<int> &draw_face_positions = face.draw_indices_by_action[cull_action];
+			if (draw_face_positions.empty()) continue;
 
 			// Calculate wobbled vertices if needed (lazy evaluation)
 			if (!wobbled_calculated) {
@@ -568,15 +566,15 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			}
 
 			// Triangulate
-			const size_t indices_size = partial_face_positions ? partial_face_positions->size() : face.indices.size();
-			for (size_t tri_start = 0; tri_start < indices_size; tri_start += 3) {
+			const size_t indices_size = draw_face_positions.size();
+			for (size_t tri_start = 0; tri_start + 2 < indices_size; tri_start += 3) {
 				// Store triangle info
 				tri_voxel_info.push_back(voxel_index);
 				tri_voxel_info.push_back((int)face_idx);
 
-				const int face_pos0 = partial_face_positions ? (*partial_face_positions)[tri_start + 0] : (int)tri_start + 0;
-				const int face_pos1 = partial_face_positions ? (*partial_face_positions)[tri_start + 1] : (int)tri_start + 1;
-				const int face_pos2 = partial_face_positions ? (*partial_face_positions)[tri_start + 2] : (int)tri_start + 2;
+				const int face_pos0 = draw_face_positions[tri_start + 0];
+				const int face_pos1 = draw_face_positions[tri_start + 1];
+				const int face_pos2 = draw_face_positions[tri_start + 2];
 
 				const int i0 = face.indices[face_pos0];
 				const int i1 = face.indices[face_pos1];
