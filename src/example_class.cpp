@@ -296,7 +296,7 @@ struct TextWriter {
 	}
 
 	String get_string() const {
-		return String(s.c_str());
+		return String::utf8(s.data(), s.size());
 	}
 };
 
