@@ -78,6 +78,12 @@ static inline uint64_t hash_variant(uint64_t seed, const Variant &v) {
 	}
 }
 
+static inline uint64_t hash_entity_attribution(uint64_t seed, const Dictionary &entity) {
+	seed = hash_string(seed, (String)entity.get("user_id", String()));
+	seed = hash_string(seed, (String)entity.get("user_display_name", String()));
+	return seed;
+}
+
 static inline int64_t to_i63(uint64_t h) {
 	return (int64_t)(h & MASK63);
 }
@@ -145,6 +151,7 @@ int64_t VoxelChecksums::entity_manager_checksum(const Array &entities) {
 		eh = hash_i64(eh, (int64_t)(int)e.get("length", 0));
 		eh = hash_vec3i(eh, (Vector3i)e.get("size_WUN", Vector3i()));
 		eh = hash_vec3i(eh, (Vector3i)e.get("size_EDS", Vector3i()));
+		eh = hash_entity_attribution(eh, e);
 
 		entity_acc = (entity_acc + (eh & MASK63)) & MASK63;
 	}
@@ -209,4 +216,3 @@ void VoxelChecksums::_bind_methods() {
 	ClassDB::bind_static_method("VoxelChecksums", D_METHOD("entity_manager_checksum", "entities"), &VoxelChecksums::entity_manager_checksum);
 	ClassDB::bind_static_method("VoxelChecksums", D_METHOD("layers_signature", "layers"), &VoxelChecksums::layers_signature);
 }
-
