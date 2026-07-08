@@ -79,8 +79,10 @@ static inline uint64_t hash_variant(uint64_t seed, const Variant &v) {
 }
 
 static inline uint64_t hash_entity_attribution(uint64_t seed, const Dictionary &entity) {
-	seed = hash_string(seed, (String)entity.get("user_id", String()));
-	seed = hash_string(seed, (String)entity.get("user_display_name", String()));
+	seed = hash_string(seed, (String)entity.get("placed_user_id", String()));
+	seed = hash_string(seed, (String)entity.get("placed_user_display_name", String()));
+	seed = hash_string(seed, (String)entity.get("edited_user_id", String()));
+	seed = hash_string(seed, (String)entity.get("edited_user_display_name", String()));
 	return seed;
 }
 

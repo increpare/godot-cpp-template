@@ -415,6 +415,42 @@ struct StreamingTextTokenizer {
 		}
 	}
 
+	static bool is_line_break(char p_char) {
+		return p_char == '\n' || p_char == '\r';
+	}
+
+	int remaining_token_count() const {
+		const char *p = ptr;
+		int count = 0;
+		while (p < end) {
+			while (p < end && !is_line_break(*p) && static_cast<unsigned char>(*p) <= ' ') {
+				p++;
+			}
+			if (p >= end || is_line_break(*p)) {
+				break;
+			}
+
+			count++;
+			if (*p == '"') {
+				p++;
+				while (p < end && !is_line_break(*p) && *p != '"') {
+					if (*p == '\\' && p + 1 < end && !is_line_break(*(p + 1))) {
+						p++;
+					}
+					p++;
+				}
+				if (p < end && *p == '"') {
+					p++;
+				}
+			} else {
+				while (p < end && static_cast<unsigned char>(*p) > ' ') {
+					p++;
+				}
+			}
+		}
+		return count;
+	}
+
 	bool next_raw_token(std::string_view &r_token) {
 		skip_whitespace();
 		if (ptr >= end) {
@@ -626,6 +662,10 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 		uint8_t flags = 0;
 		String meta_str;
 		String asset_name_str;
+		String placed_user_id_str;
+		String placed_user_display_name_str;
+		String edited_user_id_str;
+		String edited_user_display_name_str;
 		int32_t dir_value = 0;
 		int32_t star_colour_idx = 0;
 		
@@ -655,6 +695,13 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 				flags |= 0x08;
 			}
 		}
+
+		if (entities_version >= 6) {
+			placed_user_id_str = entity.get("placed_user_id", String());
+			placed_user_display_name_str = entity.get("placed_user_display_name", String());
+			edited_user_id_str = entity.get("edited_user_id", String());
+			edited_user_display_name_str = entity.get("edited_user_display_name", String());
+		}
 		
 		// Write flags byte, then conditional fields
 		writer.put_8(flags);
@@ -674,6 +721,13 @@ PackedByteArray OeufSerializer::serialize_game_data(const Array &p_savedat) cons
 		if ((flags & 0x08) != 0) {
 			// palette index (0..N-1)
 			writer.put_8(static_cast<uint8_t>(star_colour_idx));
+		}
+
+		if (entities_version >= 6) {
+			writer.put_utf8_string(placed_user_id_str);
+			writer.put_utf8_string(placed_user_display_name_str);
+			writer.put_utf8_string(edited_user_id_str);
+			writer.put_utf8_string(edited_user_display_name_str);
 		}
 
 		if (entity_type == 3) {
@@ -812,7 +866,14 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 		if ((flags & 0x08) != 0) {
 			entity[StringName("colour")] = (int32_t)reader.get_8();
 		}
-		
+
+		if (entities_version >= 6) {
+			entity[StringName("placed_user_id")] = reader.get_utf8_string();
+			entity[StringName("placed_user_display_name")] = reader.get_utf8_string();
+			entity[StringName("edited_user_id")] = reader.get_utf8_string();
+			entity[StringName("edited_user_display_name")] = reader.get_utf8_string();
+		}
+
 		if (entity_type == 3) {
 			Vector3i size_EDS;
 			size_EDS.x = reader.get_16();
@@ -854,6 +915,10 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	static const StringName SN_COLOUR("colour");
 	static const StringName SN_SIZE_EDS("size_EDS");
 	static const StringName SN_SIZE_WUN("size_WUN");
+	static const StringName SN_PLACED_USER_ID("placed_user_id");
+	static const StringName SN_PLACED_USER_DISPLAY_NAME("placed_user_display_name");
+	static const StringName SN_EDITED_USER_ID("edited_user_id");
+	static const StringName SN_EDITED_USER_DISPLAY_NAME("edited_user_display_name");
 
 	if (p_savedat.size() != 5) {
 		ERR_PRINT(vformat("serialize_to_string: Invalid savedat array size (expected 5, got %d)", p_savedat.size()));
@@ -969,6 +1034,10 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 		uint8_t flags = 0;
 		String meta_str;
 		String asset_name_str;
+		String placed_user_id_str;
+		String placed_user_display_name_str;
+		String edited_user_id_str;
+		String edited_user_display_name_str;
 		int32_t dir_value = 0;
 		int32_t star_colour_idx = 0;
 		
@@ -990,6 +1059,12 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 				flags |= 0x08;
 			}
 		}
+		if (entities_version >= 6) {
+			placed_user_id_str = entity.get(SN_PLACED_USER_ID, String());
+			placed_user_display_name_str = entity.get(SN_PLACED_USER_DISPLAY_NAME, String());
+			edited_user_id_str = entity.get(SN_EDITED_USER_ID, String());
+			edited_user_display_name_str = entity.get(SN_EDITED_USER_DISPLAY_NAME, String());
+		}
 		
 		writer.put_int(flags);
 		if (flags & 0x01) writer.put_int(dir_value + 1);
@@ -1005,6 +1080,12 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 				idx = 255;
 			}
 			writer.put_u8((uint8_t)idx);
+		}
+		if (entities_version >= 6) {
+			writer.put_string(placed_user_id_str);
+			writer.put_string(placed_user_display_name_str);
+			writer.put_string(edited_user_id_str);
+			writer.put_string(edited_user_display_name_str);
 		}
 
 		if (entity_type == 3) {
@@ -1036,6 +1117,10 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 	static const StringName SN_COLOUR("colour");
 	static const StringName SN_SIZE_EDS("size_EDS");
 	static const StringName SN_SIZE_WUN("size_WUN");
+	static const StringName SN_PLACED_USER_ID("placed_user_id");
+	static const StringName SN_PLACED_USER_DISPLAY_NAME("placed_user_display_name");
+	static const StringName SN_EDITED_USER_ID("edited_user_id");
+	static const StringName SN_EDITED_USER_DISPLAY_NAME("edited_user_display_name");
 
 	StreamingTextTokenizer reader(p_string);
 	Array savedat;
@@ -1146,6 +1231,22 @@ Array OeufSerializer::deserialize_from_string(const godot::String &p_string) con
 			if (flags & 0x04) entity[SN_ASSET_NAME] = reader.next_token();
 			if (flags & 0x08) {
 				entity[SN_COLOUR] = (int32_t)reader.next_u8();
+			}
+			if (entities_version >= 6) {
+				// Compatibility for malformed v6 text files written before attribution fields
+				// were emitted. Type 3 still has two Vector3i size fields after attribution.
+				const int required_trailing_tokens = (type == 3) ? 6 : 0;
+				if (reader.remaining_token_count() >= 4 + required_trailing_tokens) {
+					entity[SN_PLACED_USER_ID] = reader.next_token();
+					entity[SN_PLACED_USER_DISPLAY_NAME] = reader.next_token();
+					entity[SN_EDITED_USER_ID] = reader.next_token();
+					entity[SN_EDITED_USER_DISPLAY_NAME] = reader.next_token();
+				} else {
+					entity[SN_PLACED_USER_ID] = String();
+					entity[SN_PLACED_USER_DISPLAY_NAME] = String();
+					entity[SN_EDITED_USER_ID] = String();
+					entity[SN_EDITED_USER_DISPLAY_NAME] = String();
+				}
 			}
 			
 			if (type == 3) {
