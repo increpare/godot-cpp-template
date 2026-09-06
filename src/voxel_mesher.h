@@ -37,8 +37,9 @@ private:
 
 	struct ShapeVariant {
 		std::vector<Vector3> vertices;
+		// Corner bit index (x | y << 1 | z << 2), or -1 for non-corner vertices.
+		std::vector<int8_t> vertex_corners;
 		std::vector<FaceData> faces; // 6 faces
-		// Pre-calculated wobbled vertices could be cached per voxel, not per shape
 	};
 
 	// Flattened array: key = shape_type | (rotation << 4) | (vflip << 6)
@@ -80,6 +81,9 @@ private:
 	std::vector<Vector3> final_normals;
 	std::vector<Color> final_normals_smoothed;
 	std::vector<Vector2> final_uvs;
+	std::vector<int32_t> final_tri_voxel_info;
+	std::vector<Vector3> corner_noise;
+	std::vector<uint8_t> corner_noise_valid;
 	
 	struct VoxelData {
 		int16_t shape_type;

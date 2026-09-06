@@ -2,6 +2,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <cstdio>
 #include <charconv>
 #include "godot_cpp/classes/marshalls.hpp"
@@ -43,130 +44,115 @@ PackedByteArray OeufSerializer::serialize_array(const TypedArray<Vector3i> &p_ar
 	return p_packed_array;
 }
 
-// Helper for writing to PackedByteArray
+// Build bytes natively, then cross the GDExtension boundary once for the result.
+// Multi-byte fields retain the PackedByteArray format's little-endian encoding.
 struct BufferWriter {
-	PackedByteArray data;
-	int offset = 0;
+	std::vector<uint8_t> data;
 
-	void ensure_space(int p_bytes) {
-		int needed = offset + p_bytes;
-		int current_size = data.size();
-		if (current_size < needed) {
-			// Grow more aggressively - at least 2x or to needed size
-			int new_size = current_size == 0 ? 512 : current_size * 2;
-			if (new_size < needed) {
-				new_size = needed + (needed / 4); // Add 25% headroom
-			}
-			data.resize(new_size);
-		}
-	}
-
-	// Pre-allocate buffer with estimated size to reduce reallocations
 	void reserve(int p_estimated_size) {
-		if (p_estimated_size > 0 && data.size() < p_estimated_size) {
-			data.resize(p_estimated_size);
+		if (p_estimated_size > 0) {
+			data.reserve(p_estimated_size);
 		}
 	}
 
 	void put_8(uint8_t p_value) {
-		ensure_space(1);
-		data.encode_u8(offset, p_value);
-		offset += 1;
+		data.push_back(p_value);
 	}
 
 	void put_s8(int8_t p_value) {
-		ensure_space(1);
-		// Cast to uint8_t to preserve bit pattern for negative values
-		data.encode_u8(offset, static_cast<uint8_t>(p_value));
-		offset += 1;
+		put_8(static_cast<uint8_t>(p_value));
 	}
 
 	void put_16(int16_t p_value) {
-		ensure_space(2);
-		data.encode_s16(offset, p_value);
-		offset += 2;
+		const uint16_t bits = static_cast<uint16_t>(p_value);
+		put_8(static_cast<uint8_t>(bits));
+		put_8(static_cast<uint8_t>(bits >> 8));
+	}
+
+	void put_u32(uint32_t p_value) {
+		put_8(static_cast<uint8_t>(p_value));
+		put_8(static_cast<uint8_t>(p_value >> 8));
+		put_8(static_cast<uint8_t>(p_value >> 16));
+		put_8(static_cast<uint8_t>(p_value >> 24));
 	}
 
 	void put_32(int32_t p_value) {
-		ensure_space(4);
-		data.encode_s32(offset, p_value);
-		offset += 4;
+		put_u32(static_cast<uint32_t>(p_value));
 	}
 
 	void put_float(float p_value) {
-		ensure_space(4);
-		data.encode_float(offset, p_value);
-		offset += 4;
+		uint32_t bits;
+		static_assert(sizeof(bits) == sizeof(p_value));
+		memcpy(&bits, &p_value, sizeof(bits));
+		put_u32(bits);
 	}
 
 	void put_utf8_string(const String &p_string) {
 		PackedByteArray utf8 = p_string.to_utf8_buffer();
-		int len = utf8.size();
+		const int len = utf8.size();
 		put_32(len);
-		if (len > 0) {
-			ensure_space(len);
-			// Use direct memory copy for better performance
-			const uint8_t *src = utf8.ptr();
-			uint8_t *dst = data.ptrw() + offset;
-			memcpy(dst, src, len);
-			offset += len;
-		}
+		put_bytes(utf8.ptr(), len);
 	}
 
-	// Optimized method to write raw bytes directly
 	void put_bytes(const uint8_t *p_bytes, int p_len) {
 		if (p_len > 0) {
-			ensure_space(p_len);
-			uint8_t *dst = data.ptrw() + offset;
-			memcpy(dst, p_bytes, p_len);
-			offset += p_len;
+			data.insert(data.end(), p_bytes, p_bytes + p_len);
 		}
 	}
 
-	PackedByteArray get_packed_byte_array() {
-		data.resize(offset);
-		return data;
+	PackedByteArray get_packed_byte_array() const {
+		PackedByteArray result;
+		result.resize(data.size());
+		if (!data.empty()) {
+			memcpy(result.ptrw(), data.data(), data.size());
+		}
+		return result;
 	}
 };
 
 // Helper for reading from PackedByteArray
 struct BufferReader {
 	PackedByteArray data;
-	int offset = 0;
+	int64_t offset = 0;
+	const int64_t size;
+	const uint8_t *bytes;
 
-	BufferReader(const PackedByteArray &p_data) : data(p_data) {}
+	BufferReader(const PackedByteArray &p_data) : data(p_data), size(data.size()), bytes(data.ptr()) {}
 
 	uint8_t get_8() {
-		if (offset + 1 > data.size()) return 0;
-		uint8_t v = data.decode_u8(offset);
+		if (offset + 1 > size) return 0;
+		uint8_t v = bytes[offset];
 		offset += 1;
 		return v;
 	}
 
 	int8_t get_s8() {
-		if (offset + 1 > data.size()) return 0;
-		uint8_t v = data.decode_u8(offset);
+		if (offset + 1 > size) return 0;
+		uint8_t v = bytes[offset];
 		offset += 1;
 		// Cast back to signed to interpret as two's complement
 		return static_cast<int8_t>(v);
 	}
 
 	int16_t get_16() {
-		if (offset + 2 > data.size()) return 0;
-		int16_t v = data.decode_s16(offset);
+		if (offset + 2 > size) return 0;
+		int16_t v = static_cast<int16_t>(uint16_t(bytes[offset]) | (uint16_t(bytes[offset + 1]) << 8));
 		offset += 2;
 		return v;
 	}
 
 	int32_t get_32() {
-		if (offset + 4 > data.size()) return 0;
-		int32_t v = data.decode_s32(offset);
+		if (offset + 4 > size) return 0;
+		int32_t v = static_cast<int32_t>(uint32_t(bytes[offset]) |
+				(uint32_t(bytes[offset + 1]) << 8) |
+				(uint32_t(bytes[offset + 2]) << 16) |
+				(uint32_t(bytes[offset + 3]) << 24));
 		offset += 4;
 		return v;
 	}
 
 	float get_float() {
-		if (offset + 4 > data.size()) return 0.0f;
+		if (offset + 4 > size) return 0.0f;
 		float v = data.decode_float(offset);
 		offset += 4;
 		return v;
@@ -174,7 +160,7 @@ struct BufferReader {
 
 	String get_utf8_string() {
 		int32_t len = get_32();
-		if (len < 0 || offset + len > data.size()) return "";
+		if (len < 0 || offset + len > size) return "";
 		
 		// To decode utf8 string from a slice, we can use get_string_from_utf8 on a slice
 		// Or construct a new PackedByteArray for the slice.

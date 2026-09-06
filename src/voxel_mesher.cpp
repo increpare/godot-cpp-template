@@ -131,8 +131,17 @@ void VoxelMesher::parse_shapes(const Array &gd_database, const Dictionary &gd_uv
 				// Vertices
 				Array verts = shape_dict["vertices"];
 				sv.vertices.clear();
+				sv.vertex_corners.clear();
 				for (int v = 0; v < verts.size(); v++) {
-					sv.vertices.push_back(verts[v]);
+					const Vector3 vertex = verts[v];
+					sv.vertices.push_back(vertex);
+					int8_t corner = -1;
+					if ((vertex.x == -0.5f || vertex.x == 0.5f) &&
+							(vertex.y == -0.5f || vertex.y == 0.5f) &&
+							(vertex.z == -0.5f || vertex.z == 0.5f)) {
+						corner = (vertex.x > 0 ? 1 : 0) | (vertex.y > 0 ? 2 : 0) | (vertex.z > 0 ? 4 : 0);
+					}
+					sv.vertex_corners.push_back(corner);
 				}
 
 				// Faces
@@ -305,7 +314,7 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 	final_normals_smoothed.clear();
 	final_uvs.clear();
 	
-	tri_voxel_info.resize(0); 
+	final_tri_voxel_info.clear();
 
 	// Reserve space if needed (only grows, never shrinks)
 	const int reserve_size = voxel_count * 32;
@@ -418,6 +427,14 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		cache_entry.valid = true;
 	}
 
+	// Adjacent voxels share corner noise, but their local colors/normals differ.
+	// Cache only the noise displacement, and invalidate it for every chunk call.
+	const int corner_stride_y = size_x + 1;
+	const int corner_stride_z = corner_stride_y * (size_y + 1);
+	const int corner_count = corner_stride_z * (size_z + 1);
+	corner_noise.resize(corner_count);
+	corner_noise_valid.assign(corner_count, 0);
+
 	// Temporary buffers - reuse member buffers (cleared per voxel)
 	cached_wobbled_local_verts.clear();
 	cached_vertex_colors.clear();
@@ -453,6 +470,14 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 		bool wobbled_calculated = false;
 
 		const Vector3 v_vec(cache_entry.voxel_pos.x, cache_entry.voxel_pos.y, cache_entry.voxel_pos.z);
+		// At very large coordinates, float(voxel) +/- 0.5 can round differently
+		// for adjacent voxels. Share only where half-integer positions are exact.
+		constexpr int exact_corner_limit = 1 << 22;
+		const bool can_share_corners =
+				cache_entry.voxel_pos.x >= -exact_corner_limit && cache_entry.voxel_pos.x <= exact_corner_limit &&
+				cache_entry.voxel_pos.y >= -exact_corner_limit && cache_entry.voxel_pos.y <= exact_corner_limit &&
+				cache_entry.voxel_pos.z >= -exact_corner_limit && cache_entry.voxel_pos.z <= exact_corner_limit;
+
 
 		// Process faces
 		const size_t face_count = shape_data.faces.size();
@@ -521,10 +546,33 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 						base_local.z + v_vec.z
 					);
 
-					// Noise calculations
-					const float nx = n1->get_noise_3dv(world_pos) * noise_scale;
-					const float ny = n2->get_noise_3dv(world_pos) * noise_scale;
-					const float nz = n3->get_noise_3dv(world_pos) * noise_scale;
+					int corner_index = -1;
+					const int corner = shape_data.vertex_corners[i];
+					if (corner >= 0 && can_share_corners) {
+						const int cx = cache_entry.local_x + (corner & 1);
+						const int cy = cache_entry.local_y + ((corner >> 1) & 1);
+						const int cz = cache_entry.local_z + ((corner >> 2) & 1);
+						if ((unsigned)cx <= (unsigned)size_x &&
+								(unsigned)cy <= (unsigned)size_y &&
+								(unsigned)cz <= (unsigned)size_z) {
+							corner_index = cx + cy * corner_stride_y + cz * corner_stride_z;
+						}
+					}
+					Vector3 displacement;
+					if (corner_index >= 0 && corner_noise_valid[corner_index]) {
+						displacement = corner_noise[corner_index];
+					} else {
+						displacement.x = n1->get_noise_3dv(world_pos) * noise_scale;
+						displacement.y = n2->get_noise_3dv(world_pos) * noise_scale;
+						displacement.z = n3->get_noise_3dv(world_pos) * noise_scale;
+						if (corner_index >= 0) {
+							corner_noise[corner_index] = displacement;
+							corner_noise_valid[corner_index] = 1;
+						}
+					}
+					const float nx = displacement.x;
+					const float ny = displacement.y;
+					const float nz = displacement.z;
 
 					// Wobbled vertex
 					const Vector3 wobbled_local(
@@ -569,8 +617,8 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			const size_t indices_size = draw_face_positions.size();
 			for (size_t tri_start = 0; tri_start + 2 < indices_size; tri_start += 3) {
 				// Store triangle info
-				tri_voxel_info.push_back(voxel_index);
-				tri_voxel_info.push_back((int)face_idx);
+				final_tri_voxel_info.push_back(voxel_index);
+				final_tri_voxel_info.push_back((int)face_idx);
 
 				const int face_pos0 = draw_face_positions[tri_start + 0];
 				const int face_pos1 = draw_face_positions[tri_start + 1];
@@ -630,6 +678,17 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 			}
 		}
 	}
+
+	// Fully hidden/culled chunks have no surface to submit to RenderingServer.
+	if (final_vertices.empty()) {
+		Dictionary result;
+		result["arraymesh"] = array_mesh;
+		result["tri_voxel_info"] = tri_voxel_info;
+		return result;
+	}
+
+	tri_voxel_info.resize(final_tri_voxel_info.size());
+	memcpy(tri_voxel_info.ptrw(), final_tri_voxel_info.data(), final_tri_voxel_info.size() * sizeof(int32_t));
 
 	// Bulk convert to PackedArrays using memcpy for maximum speed
 	PackedVector3Array p_vertices;
