@@ -14,6 +14,7 @@ void OeufSerializer::_bind_methods() {
 	godot::ClassDB::bind_method(D_METHOD("serialize_game_data", "savedat"), &OeufSerializer::serialize_game_data);
 	godot::ClassDB::bind_method(D_METHOD("deserialize_game_data", "buffer"), &OeufSerializer::deserialize_game_data);
 	godot::ClassDB::bind_method(D_METHOD("serialize_to_string", "savedat"), &OeufSerializer::serialize_to_string);
+	godot::ClassDB::bind_method(D_METHOD("serialize_chunks_to_string", "savedat", "chunk_voxels", "chunk_properties"), &OeufSerializer::serialize_chunks_to_string);
 	godot::ClassDB::bind_method(D_METHOD("deserialize_from_string", "string"), &OeufSerializer::deserialize_from_string);
 	godot::ClassDB::bind_method(D_METHOD("create_cube_mesh"), &OeufSerializer::create_cube_mesh);
 }
@@ -885,6 +886,14 @@ Array OeufSerializer::deserialize_game_data(const PackedByteArray &p_buffer) con
 }
 
 String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
+	return serialize_to_string_internal(p_savedat, nullptr, nullptr);
+}
+
+String OeufSerializer::serialize_chunks_to_string(const Array &p_savedat, const Array &p_chunk_voxels, const Array &p_chunk_properties) const {
+	return serialize_to_string_internal(p_savedat, &p_chunk_voxels, &p_chunk_properties);
+}
+
+String OeufSerializer::serialize_to_string_internal(const Array &p_savedat, const Array *p_chunk_voxels, const Array *p_chunk_properties) const {
 	static const StringName SN_VERSION("version");
 	static const StringName SN_VOXEL_DATA("voxel_data");
 	static const StringName SN_LAYERS("layers");
@@ -912,7 +921,20 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	}
 
 	Dictionary level_state_data = p_savedat[0];
-	Array voxel_data = level_state_data[SN_VOXEL_DATA];
+	Array voxel_data;
+	int voxel_count = 0;
+	if (p_chunk_voxels) {
+		ERR_FAIL_COND_V(p_chunk_voxels->size() != p_chunk_properties->size(), "");
+		for (int i = 0; i < p_chunk_voxels->size(); i++) {
+			Array positions = (*p_chunk_voxels)[i];
+			Array properties = (*p_chunk_properties)[i];
+			ERR_FAIL_COND_V(positions.size() != properties.size(), "");
+			voxel_count += positions.size();
+		}
+	} else {
+		voxel_data = level_state_data[SN_VOXEL_DATA];
+		voxel_count = voxel_data.size();
+	}
 	Array layers = level_state_data[SN_LAYERS];
 	// entities - support both legacy (array) and versioned (dict with "version" + "entities")
 	Variant entities_slot = p_savedat[4];
@@ -928,7 +950,6 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 
 	TextWriter writer;
 
-	int voxel_count = voxel_data.size();
 	int entities_count = entities.size();
 	int layers_count = layers.size();
 
@@ -947,25 +968,40 @@ String OeufSerializer::serialize_to_string(const Array &p_savedat) const {
 	writer.end_line();
 
 	Vector3i last_position = Vector3i(0, 0, 0);
-	for (int i = 0; i < voxel_count; i++) {
-		Array voxel = voxel_data[i];
-		Vector3i v = voxel[0];
+	// Both entry points use the same voxel formatting and delta-position state.
+	auto put_voxel = [&](const Vector3i &v, const Array &properties, int offset, int64_t layer) {
 		Vector3i delta = v - last_position;
 		const bool is_delta = (delta.x >= -128 && delta.x <= 127 && delta.y >= -128 && delta.y <= 127 && delta.z >= -128 && delta.z <= 127);
 		const Vector3i pos_to_write = is_delta ? delta : v;
 		last_position = v;
 
-		int rot = voxel[4];
-		int vflip = (bool)voxel[5] ? 1 : 0;
+		int rot = properties[offset + 3];
+		int vflip = (bool)properties[offset + 4] ? 1 : 0;
 		writer.put_voxel_line(
 			is_delta,
 			pos_to_write,
-			(int64_t)voxel[1], // blocktype
-			(int64_t)voxel[2], // tx
-			(int64_t)voxel[3], // ty
+			(int64_t)properties[offset], // blocktype
+			(int64_t)properties[offset + 1], // tx
+			(int64_t)properties[offset + 2], // ty
 			(int64_t)(rot + vflip * 4),
-			(int64_t)voxel[6] // extra
+			layer
 		);
+	};
+	if (p_chunk_voxels) {
+		for (int i = 0; i < p_chunk_voxels->size(); i++) {
+			Array positions = (*p_chunk_voxels)[i];
+			Array properties = (*p_chunk_properties)[i];
+			for (int j = 0; j < positions.size(); j++) {
+				Array row = properties[j];
+				ERR_FAIL_COND_V(row.size() < 5, "");
+				put_voxel(positions[j], row, 0, row.size() > 5 ? (int64_t)row[5] : 0); // legacy layer default
+			}
+		}
+	} else {
+		for (int i = 0; i < voxel_count; i++) {
+			Array voxel = voxel_data[i];
+			put_voxel(voxel[0], voxel, 1, voxel[6]);
+		}
 	}
 
 	// layers

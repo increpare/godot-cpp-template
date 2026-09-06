@@ -123,6 +123,10 @@ private:
 	Vector2 dv;
 	const int FACE_UV_COLGROUP_SIZE = 3;
 
+	Dictionary generate_chunk_mesh_internal(const Vector3i &chunk_coord, const Array &voxels,
+		const Array &voxel_properties, const Array &layer_visibility,
+		int size_x, int size_y, int size_z, const Array *neighbor_voxels);
+
 	// Internal helpers
 	void _cache_wobbled_verts(const Vector3i &voxel, const ShapeVariant &shape, 
 		const Vector3i &offset, std::vector<Vector3> &out_verts, std::vector<Color> &out_colors);
@@ -146,6 +150,12 @@ public:
 		const Array &layer_visibility,
 		int size_x, int size_y, int size_z
 	);
+
+	// Six adjacent chunk dictionaries, indexed S/N/W/E/U/D, with world position keys.
+	// Dictionaries are read only during this call and are not retained.
+	Dictionary generate_chunk_mesh_with_neighbors(const Vector3i &chunk_coord, const Array &voxels,
+		const Array &voxel_properties, const Array &layer_visibility,
+		int size_x, int size_y, int size_z, const Array &neighbor_voxels);
 
 	Ref<ArrayMesh> generate_simplified_mesh(
 		const Vector3i &chunk_coord,

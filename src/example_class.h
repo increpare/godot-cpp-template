@@ -18,6 +18,9 @@ using namespace godot;
 class OeufSerializer : public RefCounted {
 	GDCLASS(OeufSerializer, RefCounted)
 
+private:
+	String serialize_to_string_internal(const Array &p_savedat, const Array *p_chunk_voxels, const Array *p_chunk_properties) const;
+
 protected:
 	static void _bind_methods();
 
@@ -32,6 +35,9 @@ public:
 	Array deserialize_game_data(const PackedByteArray &p_buffer) const;
 	//also functions to serialize to/from String
 	String serialize_to_string(const Array &p_savedat) const;
+	// savedat keeps the metadata/camera/entities slots; voxel_data is not required.
+	// Chunk arrays are aligned and traversed in caller order, using world positions.
+	String serialize_chunks_to_string(const Array &p_savedat, const Array &p_chunk_voxels, const Array &p_chunk_properties) const;
 	Array deserialize_from_string(const godot::String &p_string) const;
 
 	Ref<Mesh> create_cube_mesh() const;

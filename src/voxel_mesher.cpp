@@ -286,12 +286,24 @@ static inline void cross_product_normalized(
 }
 
 Dictionary VoxelMesher::generate_chunk_mesh(
-		const Vector3i &chunk_coord,
-		const Array &voxels,
-		const Array &voxel_properties,
-		const Array &layer_visibility,
-		int size_x, int size_y, int size_z) {
-	
+		const Vector3i &chunk_coord, const Array &voxels, const Array &voxel_properties,
+		const Array &layer_visibility, int size_x, int size_y, int size_z) {
+	return generate_chunk_mesh_internal(chunk_coord, voxels, voxel_properties, layer_visibility,
+		size_x, size_y, size_z, nullptr);
+}
+
+Dictionary VoxelMesher::generate_chunk_mesh_with_neighbors(
+		const Vector3i &chunk_coord, const Array &voxels, const Array &voxel_properties,
+		const Array &layer_visibility, int size_x, int size_y, int size_z, const Array &neighbor_voxels) {
+	ERR_FAIL_COND_V(neighbor_voxels.size() != 6, Dictionary());
+	return generate_chunk_mesh_internal(chunk_coord, voxels, voxel_properties, layer_visibility,
+		size_x, size_y, size_z, &neighbor_voxels);
+}
+
+Dictionary VoxelMesher::generate_chunk_mesh_internal(
+		const Vector3i &chunk_coord, const Array &voxels, const Array &voxel_properties,
+		const Array &layer_visibility, int size_x, int size_y, int size_z, const Array *neighbor_voxels) {
+
 	const int voxel_count = voxels.size();
 
 	Ref<ArrayMesh> array_mesh;
@@ -493,26 +505,43 @@ Dictionary VoxelMesher::generate_chunk_mesh(
 				const int nly = cache_entry.local_y + dir_offset.y;
 				const int nlz = cache_entry.local_z + dir_offset.z;
 
-				// Fast bounds check
-				if ((unsigned)nlx < (unsigned)size_x && 
-				    (unsigned)nly < (unsigned)size_y && 
+				bool neighbor_valid = false;
+				uint8_t neighbor_key = 0;
+				// Interior neighbors keep the existing dense-grid path.
+				if ((unsigned)nlx < (unsigned)size_x &&
+				    (unsigned)nly < (unsigned)size_y &&
 				    (unsigned)nlz < (unsigned)size_z) {
 					const int n_idx = grid_cache[nlx + nly * stride_y + nlz * stride_z];
-					
 					if (n_idx != -1 && voxel_cache[n_idx].valid) {
-						const CachedVoxelInfo &n_cache = voxel_cache[n_idx];
-						const int opp_dir = OPPOSITE_DIR[face_idx];
-						const int neigh_occupancy = face_occupancy_cache[n_cache.lookup_key * 6 + opp_dir];
-						const int sub_idx = occupancy_table_index(face.face_occupancy);
-						const int cont_idx = occupancy_table_index(neigh_occupancy);
-						
-						if (sub_idx >= 0 && cont_idx >= 0 &&
-								sub_idx < occupancy_action_table_size &&
-								cont_idx < occupancy_action_table_size) {
-							const int table_idx = sub_idx * occupancy_action_table_size + cont_idx;
-							if (table_idx >= 0 && table_idx < (int)occupancy_action_table.size()) {
-								cull_action = occupancy_action_table[table_idx];
+						neighbor_valid = true;
+						neighbor_key = voxel_cache[n_idx].lookup_key;
+					}
+				} else if (neighbor_voxels) {
+					// Only out-of-chunk, cullable faces need a dictionary lookup.
+					Dictionary neighbors = (*neighbor_voxels)[face_idx];
+					Variant found = neighbors.get(cache_entry.voxel_pos + dir_offset, Variant());
+					if (found.get_type() == Variant::ARRAY) {
+						Array props = found;
+						if (props.size() >= 6) {
+							int layer = props[5];
+							if (layer >= 0 && layer < layer_count && layers_vis[layer]) {
+								neighbor_key = (uint8_t)(int)props[0] | ((uint8_t)(int)props[3] << 4) | (((bool)props[4] ? 1 : 0) << 6);
+								neighbor_valid = shape_lookup_valid[neighbor_key];
 							}
+						}
+					}
+				}
+				if (neighbor_valid) {
+					const int opp_dir = OPPOSITE_DIR[face_idx];
+					const int neigh_occupancy = face_occupancy_cache[neighbor_key * 6 + opp_dir];
+					const int sub_idx = occupancy_table_index(face.face_occupancy);
+					const int cont_idx = occupancy_table_index(neigh_occupancy);
+					if (sub_idx >= 0 && cont_idx >= 0 &&
+							sub_idx < occupancy_action_table_size &&
+							cont_idx < occupancy_action_table_size) {
+						const int table_idx = sub_idx * occupancy_action_table_size + cont_idx;
+						if (table_idx >= 0 && table_idx < (int)occupancy_action_table.size()) {
+							cull_action = occupancy_action_table[table_idx];
 						}
 					}
 				}
@@ -986,6 +1015,7 @@ void VoxelMesher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_texture_dimensions", "width", "height"), &VoxelMesher::set_texture_dimensions);
 	ClassDB::bind_method(D_METHOD("parse_shapes", "gd_database", "gd_uv_patterns", "gd_cull_actions", "gd_cull_action_size"), &VoxelMesher::parse_shapes);
 	ClassDB::bind_method(D_METHOD("generate_chunk_mesh", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z"), &VoxelMesher::generate_chunk_mesh);
+	ClassDB::bind_method(D_METHOD("generate_chunk_mesh_with_neighbors", "chunk_coord", "voxels", "voxel_properties", "layer_visibility", "size_x", "size_y", "size_z", "neighbor_voxels"), &VoxelMesher::generate_chunk_mesh_with_neighbors);
 	ClassDB::bind_method(D_METHOD("generate_simplified_mesh", "chunk_coord", "voxels", "size_x", "size_y", "size_z"), &VoxelMesher::generate_simplified_mesh);
 	ClassDB::bind_method(D_METHOD("compute_voxel_checksum", "chunks_dict", "layer_names"), &VoxelMesher::compute_voxel_checksum);
 }
